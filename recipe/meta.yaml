@@ -1,34 +1,30 @@
 package:
-  name: cava_data               # Name of your package
-version: 0.1.0                # Version of your package
+  name: cavapy
+  version: 0.1.0
 
 source:
-  path: ..                      # Path to your project folder (relative to `recipe/`)
-
-build:
-  noarch: python                # For architecture-independent Python packages
-number: 0                     # Build number (increment for updates)
-script: "{{ PYTHON }} -m pip install . --no-deps --ignore-installed -vv"
+  path: ..  # This points to the parent directory where climate.py and setup.py are located
 
 requirements:
-  host:
-  - python >=3.6             # Minimum Python version
-- pip                       # Needed to install your package
-run:
-  - python >=3.6             # Runtime dependency
-- xclim ==0.53.2            # Dependency from Conda-Forge
-- netcdf4 ==1.7.2           # Dependency from Conda-Forge
-- geopandas ==0.14.4        # Specific version of geopandas
+  run:
+    - conda-forge::xclim=0.53.2
+    - conda-forge::netcdf4=1.7.2
+    - conda-forge::geopandas=0.14.4
 
 about:
-  home: https://github.com/Risk-Team/cava_data/tree/main  # URL for the project (GitHub)
-license: MIT
-summary: "A Python library to facilitate access to CAVA data"
-description: |
-  This package facilitates downloading CORDEX-CORE model data for use in climate risk analysis.
-dev_url: https://github.com/Risk-Team/cava_data/tree/conda  # Optional: link to development info
+  home: https://github.com/Risk-Team/cavapy/tree/main
+  license: MIT
+  summary: "A Python library to facilitate access to CAVA data"
+  description: |
+    This package facilitates downloading CORDEX-CORE model data.
+  dev_url: https://github.com/Risk-Team/cavapy/tree/main
+
+channels:
+   - conda-forge
+   - default
 
 extra:
   recipe-maintainers:
-  - RSO9192
-  - olokshyn
+    - RSO9192
+    - olokshyn
+
