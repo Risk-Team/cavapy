@@ -69,6 +69,11 @@ ERA5_DATA_LOCAL_PATH = os.path.join(
 DEFAULT_YEARS_OBS = range(1980, 2006)
 
 
+class VariableNotAvailableError(Exception):
+    """Raised when a requested climate variable is not available in the model."""
+    pass
+
+
 def get_climate_data(
     *,
     country: str | None,
@@ -189,12 +194,23 @@ def get_climate_data(
                 )
             )
 
-        results = {
-            variable: futures[i].get() for i, variable in enumerate(variables)
-        }
-
-        pool.close()  # Prevent any more tasks from being submitted to the pool
-        pool.join()  # Wait for all worker processes to finish
+        # Try to get the first result - if it fails, terminate all processes
+        try:
+            first_result = futures[0].get()
+            # If first result succeeded, try to get the rest
+            results = {variables[0]: first_result}
+            for i, future in enumerate(futures[1:], 1):
+                try:
+                    results[variables[i]] = future.get()
+                except Exception as e:
+                    pool.terminate()
+                    raise e
+        except Exception as e:
+            pool.terminate()
+            raise e
+        finally:
+            pool.close()
+            pool.join()
 
     return results
 
@@ -389,6 +405,8 @@ def process_worker(num_threads, **kwargs) -> xr.DataArray:
             return _climate_data_for_variable(executor, **kwargs)
     except Exception as e:
         log.exception(f"Process worker failed: {e}")
+        if "is not available in model configuration" in str(e):
+            raise VariableNotAvailableError(str(e)) from e
         raise
 
 
@@ -592,10 +610,12 @@ def _download_data(
         log.info(f"Establishing connection to CORDEX data for {variable}")
         ds_var = xr.open_dataset(url)[variable]
         
-        # Check if time dimension has a prefix, indicating variable is not available
+        # Check if time dimension has a prefix, indicating variable is not available. This is a fix implemented by Ezi
         time_dims = [dim for dim in ds_var.dims if dim.startswith('time_')]
         if time_dims:
-            msg = f"Variable {variable} is not available for this model: {url}"
+            # Extract GCM and RCM from URL
+            model_info = url.split('/')[-1]  # Get filename from URL
+            msg = f"Variable {variable} is not available in model configuration: {model_info}. You can rerun the function excluding {variable} from the variables list."
             log.exception(msg)
             raise ValueError(msg)
             
@@ -655,7 +675,7 @@ def _download_data(
 if __name__ == "__main__":
     data = get_climate_data(
         country="Togo",
-        variables=["hurs"],
+        variables=["tasmax","hurs"],
         cordex_domain="AFR-22",
         rcp="rcp26",
         gcm="MPI",
@@ -666,3 +686,4 @@ if __name__ == "__main__":
         historical=False,
     )
     print(data)
+
