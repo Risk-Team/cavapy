@@ -420,6 +420,70 @@ def _validate_cordex_domain(xlim, ylim, cordex_domain):
         )
 
 
+def _leave_one_out_bias_correction(ref, hist, variable, log):
+    """
+    Perform leave-one-out cross-validation for bias correction to avoid overfitting.
+    
+    Args:
+        ref: Reference (observational) data
+        hist: Historical model data
+        variable: Variable name for determining correction method
+        log: Logger instance
+    
+    Returns:
+        xr.DataArray: Bias-corrected historical data
+    """
+    log.info("Starting leave-one-out cross-validation for bias correction")
+    
+    # Get unique years from historical data
+    hist_years = hist.time.dt.year.values
+    unique_years = np.unique(hist_years)
+    
+    # Initialize list to store corrected data for each year
+    corrected_years = []
+    
+    for leave_out_year in unique_years:
+        log.info(f"Processing leave-out year: {leave_out_year}")
+        
+        # Create masks for training (all years except leave_out_year) and testing (only leave_out_year)
+        train_mask = hist.time.dt.year != leave_out_year
+        test_mask = hist.time.dt.year == leave_out_year
+        
+        # Get training data (all years except the current one)
+        hist_train = hist.sel(time=train_mask)
+        hist_test = hist.sel(time=test_mask)
+        
+        # Get corresponding reference data for training period
+        ref_train_mask = ref.time.dt.year != leave_out_year
+        ref_train = ref.sel(time=ref_train_mask)
+        
+        # Train the bias correction model on the training data
+        QM_leave_out = sdba.EmpiricalQuantileMapping.train(
+            ref_train,
+            hist_train,
+            group="time.month",
+            kind="*" if variable in ["pr", "rsds", "sfcWind"] else "+",
+        )
+        
+        # Apply bias correction to the left-out year
+        hist_corrected_year = QM_leave_out.adjust(
+            hist_test, extrapolation="constant", interp="linear"
+        )
+        
+        # Apply variable-specific constraints
+        if variable == "hurs":
+            hist_corrected_year = hist_corrected_year.where(hist_corrected_year <= 100, 100)
+            hist_corrected_year = hist_corrected_year.where(hist_corrected_year >= 0, 0)
+        
+        corrected_years.append(hist_corrected_year)
+    
+    # Concatenate all corrected years and sort by time
+    hist_bs = xr.concat(corrected_years, dim="time").sortby("time")
+    
+    log.info("Leave-one-out cross-validation bias correction completed")
+    return hist_bs
+
+
 def process_worker(num_threads, **kwargs) -> xr.DataArray:
     variable = kwargs["variable"]
     log = logger.getChild(variable)
@@ -514,20 +578,24 @@ def _climate_data_for_variable(
         if bias_correction and historical:
             # Load observations for bias correction
             ref = future_obs.result()
-            log.info("Training eqm with historical data")
+            log.info("Training eqm with leave-one-out cross-validation")
+            
+            # Use leave-one-out cross-validation for historical bias correction
+            hist_bs = _leave_one_out_bias_correction(ref, hist, variable, log)
+            
+            # For projections, train on all historical data
             QM_mo = sdba.EmpiricalQuantileMapping.train(
                 ref,
                 hist,
                 group="time.month",
                 kind="*" if variable in ["pr", "rsds", "sfcWind"] else "+",
             )
-            log.info("Performing bias correction with eqm")
-            hist_bs = QM_mo.adjust(hist, extrapolation="constant", interp="linear")
+            log.info("Performing bias correction on projections with full historical training")
             proj_bs = QM_mo.adjust(proj, extrapolation="constant", interp="linear")
             log.info("Done!")
             if variable == "hurs":
-                hist_bs = hist_bs.where(hist_bs <= 100, 100)
-                hist_bs = hist_bs.where(hist_bs >= 0, 0)
+                proj_bs = proj_bs.where(proj_bs <= 100, 100)
+                proj_bs = proj_bs.where(proj_bs >= 0, 0)
             combined = xr.concat([hist_bs, proj_bs], dim="time")
             return combined
 
@@ -694,7 +762,7 @@ def _download_data(
 
 
 if __name__ == "__main__":
-    # Example 1: Get observational data (simplified syntax)
+    # Example 1: Get observational data
     print("Getting observational data...")
     obs_data = get_climate_data(
         country="Togo",
@@ -704,7 +772,7 @@ if __name__ == "__main__":
     )
     print("Observational data keys:", list(obs_data.keys()))
     
-    # Example 2: Get CORDEX projection data
+    # Example 2: Get CORDEX bc projection data and bc historical data
     print("\nGetting CORDEX projection data...")
     proj_data = get_climate_data(
         country="Togo",
@@ -713,6 +781,8 @@ if __name__ == "__main__":
         rcp="rcp26",
         gcm="MPI",
         rcm="Reg",
-        years_up_to=2030,
+        years_up_to=2010,
+        historical=True,
+        bias_correction=True
     )
     print("Projection data keys:", list(proj_data.keys()))
