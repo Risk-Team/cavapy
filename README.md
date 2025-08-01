@@ -6,7 +6,7 @@
    <img src="https://img.shields.io/pepy/dt/cavapy?style=plastic&label=Total%20Downloads" alt="Total downloads">
    <img src="https://img.shields.io/pypi/dm/cavapy?label=Monthly%20Downloads" alt="Monthly downloads">
    <img src="https://img.shields.io/pypi/v/cavapy?label=pypi%20package" alt="version" style="display: inline-block;">
-   <img src="https://shields.io/badge/dependencies-Python_3.11-blue" alt="version" style="display: inline-block;">
+   <img src="https://shields.io/badge/dependencies-Python_3.11+-blue" alt="version" style="display: inline-block;">
 </div>
 </h1
 
@@ -55,13 +55,21 @@ The climate data provided by `cavapy` is hosted on the THREDDS data server of th
 ---
 
 ## Installation
-cavapy can be installed with pip. Ensure that you are not using a python version > 3. 
+cavapy can be installed with pip. 
 
+Linux
 ```
 conda create -n test python=3.11
 conda activate test
 pip install cavapy
 ```
+In Windows or macOS cavapy works with Python => 3.11
+```
+conda create -n test python=3.12
+conda activate test
+pip install cavapy
+```
+
 ## Process
 
 The get_climate_data function performs automatically:
