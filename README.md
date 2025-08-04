@@ -57,15 +57,8 @@ The climate data provided by `cavapy` is hosted on the THREDDS data server of th
 ## Installation
 cavapy can be installed with pip. 
 
-Linux
 ```
-conda create -n test python=3.11
-conda activate test
-pip install cavapy
-```
-In Windows or macOS cavapy works with Python => 3.11
-```
-conda create -n test python=3.12
+conda create -n test "python>=3.11,<3.13"
 conda activate test
 pip install cavapy
 ```
