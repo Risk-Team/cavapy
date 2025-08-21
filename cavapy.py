@@ -195,6 +195,10 @@ def get_climate_data(
     else:
         variables = VALID_VARIABLES
 
+    # Validate GCM-RCM combinations for specific domains (only for non-observational data)
+    if not obs:
+        _validate_gcm_rcm_combinations(cordex_domain, gcm, rcm)
+
     _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction)
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
@@ -325,6 +329,51 @@ def _geo_localize(
         _validate_cordex_domain(xlim, ylim, cordex_domain)
 
     return {"xlim": xlim, "ylim": ylim}
+
+
+def _validate_gcm_rcm_combinations(cordex_domain: str, gcm: str, rcm: str):
+    """
+    Validate that the GCM-RCM combination is available for the specified CORDEX domain.
+    
+    Args:
+        cordex_domain: CORDEX domain name
+        gcm: Global Climate Model name
+        rcm: Regional Climate Model name
+    
+    Raises:
+        ValueError: If the combination is not available for the domain
+    """
+    # Define invalid combinations per domain
+    invalid_combinations = {
+        "WAS-22": [
+            ("MOHC", "Reg")  # MOHC-Reg is not available for WAS-22
+        ],
+        "CAS-22": [
+            ("MOHC", "Reg"),  # Reg is not available for any GCM in CAS-22
+            ("MPI", "Reg"),
+            ("NCC", "Reg")
+        ]
+    }
+    
+    if cordex_domain in invalid_combinations:
+        invalid_combos = invalid_combinations[cordex_domain]
+        current_combo = (gcm, rcm)
+        
+        if current_combo in invalid_combos:
+            # Get available combinations for this domain
+            all_gcm = VALID_GCM
+            all_rcm = VALID_RCM
+            available_combos = []
+            
+            for g in all_gcm:
+                for r in all_rcm:
+                    if (g, r) not in invalid_combos:
+                        available_combos.append(f"{g}-{r}")
+            
+            raise ValueError(
+                f"The combination {gcm}-{rcm} is not available for domain {cordex_domain}. "
+                f"Available combinations for {cordex_domain}: {', '.join(available_combos)}"
+            )
 
 
 def _validate_cordex_domain(xlim, ylim, cordex_domain):

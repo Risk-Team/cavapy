@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "cavapy"
-version = "0.3.0"
-description = "CAVA Python package. Retrive and analyze climate data."
+version = "0.3.1"
+description = "CAVA Python package. Retrive climate data."
 authors = ["Riccardo Soldan <riccardosoldan@hotmail.it>", "Oleh Lokshyn <olokshyn@gmail.com>"]
 readme = "README.md"
 license = "MIT"
