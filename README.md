@@ -141,40 +141,13 @@ fig = cavapy.plot_spatial_map(
 #### Time Series Analysis
 ```python
 # Plot precipitation time series with trend analysis
-fig = cavapy.plot_time_series(
+fig_precip = cavapy.plot_time_series(
     data['pr'],
-    title="Precipitation Trends",
-    trend_line=True,    # Add trend line
-    save_path="precip_trends.png"
-)
-```
-
-<div align="center">
-  <img src="figures/time_series_precipitation.png" alt="Precipitation Time Series" width="600">
-  <br><em>Example time series plot showing precipitation trends in Togo with trend line</em>
-</div>
-
-#### Multiple Variables
-```python
-# Get data with multiple variables
-data = cavapy.get_climate_data(
-    country="Togo", 
-    variables=["tasmax", "pr"], 
-    obs=True, 
-    years_obs=range(1990, 2011)
-)
-
-# Plot both temperature and precipitation maps
-fig1 = cavapy.plot_spatial_map(
-    data['tasmax'], 
-    title="Maximum Temperature",
-    cmap="Reds"
-)
-
-fig2 = cavapy.plot_spatial_map(
-    data['pr'], 
-    title="Precipitation",
-    cmap="Blues"
+    title="Precipitation Time Series - Togo (1990-2000)",
+    trend_line=True,
+    ylabel="Annual Precipitation (mm)",
+    aggregation="sum",
+    figsize=(12, 6)
 )
 ```
 
