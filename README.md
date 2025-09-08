@@ -105,3 +105,84 @@ Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax",
 import cavapy
 Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax", "pr"], obs=True,  years_obs=range(1980,2019))
 ```
+
+## Plotting Functionality
+
+`cavapy` now includes built-in plotting functions to easily visualize your climate data as maps and time series. The plotting functions work seamlessly with the data returned by `get_climate_data()`.
+
+### Available Plotting Functions
+
+- **`plot_spatial_map()`**: Create spatial maps of climate variables
+- **`plot_time_series()`**: Generate time series plots with trend analysis
+
+### Plotting Examples
+
+#### Spatial Maps
+```python
+import cavapy
+
+# Get climate data
+data = cavapy.get_climate_data(country="Togo", obs=True, years_obs=range(1990, 2011))
+
+# Plot mean temperature map for a specific period
+fig = cavapy.plot_spatial_map(
+    data['tasmax'], 
+    time_period=(2000, 2010),
+    title="Mean Max Temperature 2000-2010",
+    cmap="Reds"
+)
+```
+
+<div align="center">
+  <img src="figures/spatial_map_temperature.png" alt="Spatial Temperature Map" width="600">
+  <br><em>Example spatial map showing mean maximum temperature in Togo (2000-2010)</em>
+</div>
+
+#### Time Series Analysis
+```python
+# Plot precipitation time series with trend analysis
+fig = cavapy.plot_time_series(
+    data['pr'],
+    title="Precipitation Trends",
+    trend_line=True,    # Add trend line
+    save_path="precip_trends.png"
+)
+```
+
+<div align="center">
+  <img src="figures/time_series_precipitation.png" alt="Precipitation Time Series" width="600">
+  <br><em>Example time series plot showing precipitation trends in Togo with trend line</em>
+</div>
+
+#### Multiple Variables
+```python
+# Get data with multiple variables
+data = cavapy.get_climate_data(
+    country="Togo", 
+    variables=["tasmax", "pr"], 
+    obs=True, 
+    years_obs=range(1990, 2011)
+)
+
+# Plot both temperature and precipitation maps
+fig1 = cavapy.plot_spatial_map(
+    data['tasmax'], 
+    title="Maximum Temperature",
+    cmap="Reds"
+)
+
+fig2 = cavapy.plot_spatial_map(
+    data['pr'], 
+    title="Precipitation",
+    cmap="Blues"
+)
+```
+
+### Plotting Features
+
+- **Automatic units and labels**: Plots automatically use proper units and variable names
+- **Cartopy integration**: High-quality maps with coastlines and country borders (requires cartopy)
+- **Flexible time periods**: Subset data to specific years for analysis
+- **Multiple aggregation methods**: mean, sum, min, max, std
+- **Customizable styling**: Control colors, figure size, and save options
+- **Trend analysis**: Add trend lines to time series plots

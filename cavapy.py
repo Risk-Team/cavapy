@@ -5,17 +5,27 @@ from functools import partial
 import logging
 import warnings
 
-warnings.filterwarnings(
-    "ignore",
-    category=FutureWarning,
-    message=".*geopandas.dataset module is deprecated.*",
-)
-import geopandas as gpd  # noqa: E402
 import pandas as pd  # noqa: E402
 import xarray as xr  # noqa: E402
 import numpy as np  # noqa: E402
-from xclim import sdba  # noqa: E402
+import xsdba as sdba  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.dates as mdates  # noqa: E402
+import seaborn as sns  # noqa: E402
+from datetime import datetime  # noqa: E402
+from typing import Union, List, Tuple, Optional  # noqa: E402
 
+import cartopy.crs as ccrs  # noqa: E402
+import cartopy.feature as cfeature  # noqa: E402
+import cartopy.io.shapereader as shpreader  # noqa: E402
+
+# Suppress cartopy download warnings for Natural Earth data
+try:
+    from cartopy.io import DownloadWarning
+    warnings.filterwarnings('ignore', category=DownloadWarning)
+except ImportError:
+    # Fallback to suppressing all UserWarnings from cartopy.io
+    warnings.filterwarnings('ignore', category=UserWarning, module='cartopy.io')
 
 logger = logging.getLogger("climate")
 logger.handlers = []  # Remove any existing handlers
@@ -289,6 +299,48 @@ def _validate_urls(
         log_obs.info(f"{ERA5_DATA_REMOTE_URL}")
 
 
+def _get_country_bounds(country_name: str) -> tuple[float, float, float, float]:
+    """
+    Get country bounding box using cartopy's Natural Earth data.
+    
+    Args:
+        country_name: Name of the country
+        
+    Returns:
+        tuple: (minx, miny, maxx, maxy) bounding box
+        
+    Raises:
+        ValueError: If country not found
+    """
+    # Use Natural Earth countries dataset via cartopy
+    countries_feature = cfeature.NaturalEarthFeature(
+        'cultural', 'admin_0_countries', '50m'
+    )
+    
+    # Get the actual shapefile path from the feature
+    shapefile_path = countries_feature.with_scale('50m').geometries()
+    
+    # Search for the country using Natural Earth records
+    for country_record in shpreader.Reader(shpreader.natural_earth(resolution='50m', category='cultural', name='admin_0_countries')).records():
+        # Try multiple name fields for better matching
+        country_names = [
+            country_record.attributes.get('NAME', ''),
+            country_record.attributes.get('NAME_LONG', ''),
+            country_record.attributes.get('ADMIN', ''),
+            country_record.attributes.get('NAME_EN', '')
+        ]
+        
+        if any(name.lower() == country_name.lower() for name in country_names if name):
+            return country_record.geometry.bounds
+    
+    # If not found, check for capitalization issue
+    if country_name and country_name[0].islower():
+        capitalized = country_name.capitalize()
+        raise ValueError(f"Country '{country_name}' not found. Try capitalizing the first letter: '{capitalized}'")
+    else:
+        raise ValueError(f"Country '{country_name}' is unknown.")
+
+
 def _geo_localize(
     country: str = None,
     xlim: tuple[float, float] = None,
@@ -302,17 +354,8 @@ def _geo_localize(
             raise ValueError(
                 "Specify either a country or bounding box limits (xlim, ylim), but not both."
             )
-        # Load country shapefile and extract bounds
-        world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
-        country_shp = world[world.name == country]
-        if country_shp.empty:
-            # Check if it's a capitalization issue
-            if country and country[0].islower():
-                capitalized = country.capitalize()
-                raise ValueError(f"Country '{country}' not found. Try capitalizing the first letter: '{capitalized}'")
-            else:
-                raise ValueError(f"Country '{country}' is unknown.")
-        bounds = country_shp.total_bounds  # [minx, miny, maxx, maxy]
+        
+        bounds = _get_country_bounds(country)
         xlim, ylim = (bounds[0], bounds[2]), (bounds[1], bounds[3])
     elif not (xlim and ylim):
         raise ValueError(
@@ -810,6 +853,242 @@ def _download_data(
     return ds_cropped
 
 
+# =============================================================================
+# PLOTTING FUNCTIONS
+# =============================================================================
+
+def plot_spatial_map(
+    data: xr.DataArray,
+    time_period: Optional[Tuple[int, int]] = None,
+    aggregation: str = "mean",
+    title: Optional[str] = None,
+    cmap: str = "viridis",
+    figsize: Tuple[int, int] = (12, 8),
+    show_countries: bool = True,
+    save_path: Optional[str] = None,
+    **kwargs
+) -> plt.Figure:
+    """
+    Create a spatial map visualization of climate data.
+    
+    Args:
+        data (xr.DataArray): Climate data array with latitude/longitude coordinates
+        time_period (tuple, optional): (start_year, end_year) to subset data. If None, uses all data
+        aggregation (str): Temporal aggregation method ('mean', 'sum', 'min', 'max', 'std')
+        title (str, optional): Plot title. If None, auto-generated
+        cmap (str): Colormap name
+        figsize (tuple): Figure size (width, height)
+        show_countries (bool): Whether to show country boundaries
+        save_path (str, optional): Path to save the plot
+        **kwargs: Additional arguments passed to the plot function
+        
+    Returns:
+        matplotlib.figure.Figure: The created figure
+        
+    Examples:
+        # Plot mean temperature for 2020-2030
+        fig = plot_spatial_map(data['tasmax'], time_period=(2020, 2030), 
+                              title="Mean Max Temperature 2020-2030")
+        
+        # Plot precipitation sum with custom colormap
+        fig = plot_spatial_map(data['pr'], aggregation='sum', cmap='Blues')
+    """
+    
+    # Subset data by time period if specified
+    plot_data = data.copy()
+    if time_period is not None:
+        start_year, end_year = time_period
+        plot_data = plot_data.sel(
+            time=slice(f"{start_year}-01-01", f"{end_year}-12-31")
+        )
+    
+    # Apply temporal aggregation
+    if aggregation == "mean":
+        plot_data = plot_data.mean(dim="time")
+    elif aggregation == "sum":
+        plot_data = plot_data.sum(dim="time")
+    elif aggregation == "min":
+        plot_data = plot_data.min(dim="time")
+    elif aggregation == "max":
+        plot_data = plot_data.max(dim="time")
+    elif aggregation == "std":
+        plot_data = plot_data.std(dim="time")
+    else:
+        raise ValueError(f"Unsupported aggregation method: {aggregation}")
+    
+    # Create figure with cartopy
+    fig, ax = plt.subplots(
+        figsize=figsize, 
+        subplot_kw={'projection': ccrs.PlateCarree()}
+    )
+    
+    # Plot data
+    im = plot_data.plot(
+        ax=ax,
+        cmap=cmap,
+        transform=ccrs.PlateCarree(),
+        add_colorbar=False,
+        **kwargs
+    )
+    
+    # Add map features
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+    if show_countries:
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, alpha=0.7)
+    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+    ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.3)
+    
+    # Set extent to data bounds with small buffer
+    lon_min, lon_max = plot_data.longitude.min().item(), plot_data.longitude.max().item()
+    lat_min, lat_max = plot_data.latitude.min().item(), plot_data.latitude.max().item()
+    buffer = 0.5
+    ax.set_extent([lon_min - buffer, lon_max + buffer, 
+                  lat_min - buffer, lat_max + buffer], ccrs.PlateCarree())
+    
+    # Add gridlines with labels only on left and bottom
+    gl = ax.gridlines(draw_labels=True, alpha=0.3)
+    gl.top_labels = False     # No labels on top
+    gl.right_labels = False   # No labels on right
+    gl.left_labels = True     # Labels on left (latitude)
+    gl.bottom_labels = True   # Labels on bottom (longitude)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    if hasattr(plot_data, 'units'):
+        cbar.set_label(f"{plot_data.name} ({plot_data.units})", rotation=270, labelpad=20)
+    else:
+        cbar.set_label(f"{plot_data.name}", rotation=270, labelpad=20)
+    
+    # Set title
+    if title is None:
+        var_name = plot_data.name or "Climate Variable"
+        if time_period:
+            title = f"{aggregation.title()} {var_name} ({time_period[0]}-{time_period[1]})"
+        else:
+            title = f"{aggregation.title()} {var_name}"
+    
+    ax.set_title(title, fontsize=14, pad=20)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return fig
+
+
+def plot_time_series(
+    data: Union[xr.DataArray, List[xr.DataArray]],
+    aggregation: str = "mean",
+    labels: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    ylabel: Optional[str] = None,
+    figsize: Tuple[int, int] = (12, 6),
+    trend_line: bool = False,
+    save_path: Optional[str] = None,
+    **kwargs
+) -> plt.Figure:
+    """
+    Create time series plots of climate data.
+    
+    Args:
+        data (xr.DataArray or list): Single DataArray or list of DataArrays to plot
+        aggregation (str): Spatial aggregation method ('mean', 'sum', 'min', 'max', 'std')
+        labels (list, optional): Labels for multiple datasets
+        title (str, optional): Plot title
+        ylabel (str, optional): Y-axis label
+        figsize (tuple): Figure size
+        trend_line (bool): Whether to add trend line
+        save_path (str, optional): Path to save the plot
+        **kwargs: Additional arguments passed to plot function
+        
+    Returns:
+        matplotlib.figure.Figure: The created figure
+        
+    Examples:
+        # Plot single time series
+        fig = plot_time_series(data['tasmax'], title="Temperature Trends")
+        
+        # Compare multiple scenarios
+        fig = plot_time_series([data1['pr'], data2['pr']], 
+                              labels=['RCP2.6', 'RCP8.5'], 
+                              title="Precipitation Comparison")
+    """
+    
+    # Ensure data is a list
+    if isinstance(data, xr.DataArray):
+        data_list = [data]
+        labels = labels or [data.name or "Data"]
+    else:
+        data_list = data
+        labels = labels or [f"Dataset {i+1}" for i in range(len(data_list))]
+    
+    if len(data_list) != len(labels):
+        raise ValueError("Number of labels must match number of datasets")
+    
+    # Set up the plot
+    fig, ax1 = plt.subplots(figsize=figsize)
+    
+    # Process and plot each dataset
+    for i, (dataset, label) in enumerate(zip(data_list, labels)):
+        # Apply spatial aggregation
+        if aggregation == "mean":
+            ts_data = dataset.mean(dim=["latitude", "longitude"])
+        elif aggregation == "sum":
+            ts_data = dataset.sum(dim=["latitude", "longitude"])
+        elif aggregation == "min":
+            ts_data = dataset.min(dim=["latitude", "longitude"])
+        elif aggregation == "max":
+            ts_data = dataset.max(dim=["latitude", "longitude"])
+        elif aggregation == "std":
+            ts_data = dataset.std(dim=["latitude", "longitude"])
+        else:
+            raise ValueError(f"Unsupported aggregation method: {aggregation}")
+        
+        # Convert to annual means for cleaner plotting
+        annual_data = ts_data.groupby("time.year").mean()
+        
+        # Plot the time series
+        ax1.plot(annual_data.year, annual_data.values, label=label, linewidth=2, **kwargs)
+        
+        # Add trend line if requested
+        if trend_line:
+            z = np.polyfit(annual_data.year, annual_data.values, 1)
+            p = np.poly1d(z)
+            ax1.plot(annual_data.year, p(annual_data.year), 
+                    linestyle='--', alpha=0.7, 
+                    color=ax1.lines[-1].get_color())
+    
+    # Format main plot
+    ax1.set_xlabel("Year", fontsize=12)
+    if ylabel is None:
+        if hasattr(data_list[0], 'units'):
+            ylabel = f"{data_list[0].name} ({data_list[0].units})"
+        else:
+            ylabel = data_list[0].name or "Value"
+    ax1.set_ylabel(ylabel, fontsize=12)
+    
+    if len(data_list) > 1:
+        ax1.legend()
+    
+    ax1.grid(True, alpha=0.3)
+    
+    # Set main title
+    if title is None:
+        var_name = data_list[0].name or "Climate Variable"
+        title = f"{aggregation.title()} {var_name} Time Series"
+    
+    ax1.set_title(title, fontsize=14, pad=20)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    return fig
+
+
+
 if __name__ == "__main__":
     # Example 1: Get observational data
     print("Getting observational data...")
@@ -835,3 +1114,24 @@ if __name__ == "__main__":
         bias_correction=True
     )
     print("Projection data keys:", list(proj_data.keys()))
+    
+    # Example 3: Test new country lookup functionality
+    print("\nTesting country lookup functionality...")
+    try:
+        # Test cartopy-based country lookup
+        bounds = _get_country_bounds("Togo")
+        print(f"Country lookup successful - Togo bounds: {bounds}")
+    except Exception as e:
+        print(f"Country lookup failed: {e}")
+    
+    # Example 4: Plotting demonstrations (commented out to avoid blocking)
+    print("\nPlotting functionality is available!")
+    print("Use plot_spatial_map() and plot_time_series() functions")
+    
+    # Uncomment these lines to see actual plots:
+    # fig1 = plot_spatial_map(obs_data['tasmax'], time_period=(2000, 2010), 
+    #                        title="Mean Max Temperature 2000-2010 (ERA5)", cmap="Reds")
+    # fig2 = plot_time_series(obs_data['pr'], title="Precipitation Time Series (Togo)", 
+    #                        trend_line=True)
+    
+    print("Example completed successfully!")
