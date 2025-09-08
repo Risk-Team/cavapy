@@ -152,15 +152,7 @@ fig_precip = cavapy.plot_time_series(
 
 <div align="center">
   <img src="figures/time_series_precipitation.png" alt="Precipitation Trends" width="600">
-  <br><em>Example time series plot showing precipitation trends in Togo (1990-2000) with trend line</em>
+  <br><em>Example time series plot showing precipitation trends in Togo (1990-2011) with trend line</em>
 </div>
 
 
-### Plotting Features
-
-- **Automatic units and labels**: Plots automatically use proper units and variable names
-- **Cartopy integration**: High-quality maps with coastlines and country borders (requires cartopy)
-- **Flexible time periods**: Subset data to specific years for analysis
-- **Multiple aggregation methods**: mean, sum, min, max, std
-- **Customizable styling**: Control colors, figure size, and save options
-- **Trend analysis**: Add trend lines to time series plots
