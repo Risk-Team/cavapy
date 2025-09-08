@@ -75,7 +75,6 @@ The get_climate_data function performs automatically:
 Depending on the interest, downloading climate data can be done in a few different ways. Note that GCM stands for General Circulation Model while RCM stands for Regional Climate Model. As the climate data comes from the CORDEX-CORE initiative, users can choose between 3 different GCMs downscaled with two RCMs. In total, there are six simulations for any given domain (except for CAS-22 where only three are available).
 Since bias-correction requires both the historical run of the CORDEX model and the observational dataset (in this case ERA5), even when the historical argument is set to False, the historical run will be used for learning the bias correction factor.
 
-It takes about 10 minutes to run each of the tasks below. For bigger areas/country, the computational time increases.
 
 ### Bias-corrected climate projections
 **By default all available climate variables are used. You can specify a subset with the variable argument**
@@ -105,3 +104,55 @@ Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax",
 import cavapy
 Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax", "pr"], obs=True,  years_obs=range(1980,2019))
 ```
+
+## Plotting Functionality
+
+`cavapy` now includes built-in plotting functions to easily visualize your climate data as maps and time series. The plotting functions work seamlessly with the data returned by `get_climate_data()`.
+
+### Available Plotting Functions
+
+- **`plot_spatial_map()`**: Create spatial maps of climate variables
+- **`plot_time_series()`**: Generate time series plots with trend analysis
+
+### Plotting Examples
+
+#### Spatial Maps
+```python
+import cavapy
+
+# Get climate data
+data = cavapy.get_climate_data(country="Togo", obs=True, years_obs=range(1990, 2011))
+
+# Plot mean temperature map for a specific period
+fig = cavapy.plot_spatial_map(
+    data['tasmax'], 
+    time_period=(2000, 2010),
+    title="Mean Max Temperature 2000-2010",
+    cmap="Reds"
+)
+```
+
+<div align="center">
+  <img src="figures/spatial_map_temperature.png" alt="Spatial Temperature Map" width="600">
+  <br><em>Example spatial map showing mean maximum temperature in Togo (2000-2010)</em>
+</div>
+
+#### Time Series Analysis
+```python
+# Plot precipitation time series with trend analysis
+fig_precip = cavapy.plot_time_series(
+    data['pr'],
+    title="Precipitation Time Series - Togo (1990-2000)",
+    trend_line=True,
+    ylabel="Annual Precipitation (mm)",
+    aggregation="sum",
+    figsize=(12, 6)
+)
+```
+
+<div align="center">
+  <img src="figures/time_series_precipitation.png" alt="Precipitation Trends" width="600">
+  <br><em>Example time series plot showing precipitation trends in Togo (1990-2011) with trend line</em>
+</div>
+
+
