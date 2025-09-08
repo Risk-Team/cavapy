@@ -6,7 +6,10 @@
   <a href="https://www.fao.org/contact-us/data-protection-and-privacy/en/" aria-label="FAO Data Protection and Privacy policy">
     <img src="https://img.shields.io/badge/Data%20Protection%20%26%20Privacy-FAO-blue" alt="FAO Data Protection and Privacy" style="display:inline-block;">
   </a>
+  <br><br>
+  ⭐ If you like this project, please <a href="https://github.com/risk-team/cavapy/stargazers">give it a star on GitHub</a>!
 </div>
+
 
 --------------------------------------------------------------------------------------------------
 **Check GitHub issues for known servers' downtimes**
