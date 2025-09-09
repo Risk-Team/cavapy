@@ -3,6 +3,7 @@
 <div align="center">
   <img src="https://img.shields.io/pepy/dt/cavapy?style=plastic&label=Total%20Downloads" alt="Total downloads">
   <img src="https://img.shields.io/pypi/v/cavapy?label=PyPI%20package&style=plastic" alt="PyPI version" style="display:inline-block;">
+  <img src="https://img.shields.io/badge/python-%3E=3.11-blue?style=plastic" alt="Python version support" style="display:inline-block;">
   <a href="https://www.fao.org/contact-us/data-protection-and-privacy/en/" aria-label="FAO Data Protection and Privacy policy">
     <img src="https://img.shields.io/badge/Data%20Protection%20%26%20Privacy-FAO-blue" alt="FAO Data Protection and Privacy" style="display:inline-block;">
   </a>
