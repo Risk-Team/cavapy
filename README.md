@@ -1,4 +1,4 @@
-<h1 align="center">cavapy: CORDEX-CORE Climate Data Access Simplified</h1>
+<h1 align="center">cavapy: Access to ERA5 and CORDEX-CORE Datasets Simplified</h1>
 
 <div align="center">
   <img src="https://img.shields.io/pepy/dt/cavapy?style=plastic&label=Total%20Downloads" alt="Total downloads">
