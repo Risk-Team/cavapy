@@ -108,7 +108,7 @@ Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax",
 
 ## Plotting Functionality
 
-`cavapy` now includes built-in plotting functions to easily visualize your climate data as maps and time series. The plotting functions work seamlessly with the data returned by `get_climate_data()`.
+`cavapy` now includes built-in plotting functions to easily visualize your climate data as maps and time series. The plotting functions work seamlessly with the data returned by `get_climate_data()`. **However, if your main goal is visualisation, we strongly encourage you to check out [CAVAanalytics](https://risk-team.github.io/CAVAanalytics/), our R package**.
 
 ### Available Plotting Functions
 
