@@ -13,9 +13,9 @@
 
 
 --------------------------------------------------------------------------------------------------
-**Check GitHub issues for known servers' downtimes**
+⚠️ **Check GitHub issues for known servers' downtimes**
 
-**We will release bias-corrected CORDEX-CORE simulations with the ISIMIP methodology in 2025. This will allow non-expert users to directly use these datasets and avoid the need for custom bias-correction**
+🎉 **NEW: We have released bias-corrected CORDEX-CORE simulations with the ISIMIP methodology for the AFR-22 domain!** 🌍 This allows non-expert users to directly use these datasets and avoid the need for custom bias-correction. 📊 Additional domains will be released throughout 2025.
 
 --------------------------------------------------------------------------------------------------
 
@@ -78,26 +78,92 @@ Since bias-correction requires both the historical run of the CORDEX model and t
 
 
 ### Bias-corrected climate projections
-**By default all available climate variables are used. You can specify a subset with the variable argument**
 
-Note that bias correction is automatically performed with empirical quantile mapping on a monthly basis to account for seasonality.
+**Option 1: Use pre-bias-corrected ISIMIP data (Recommended)**
 ```
 import cavapy
-Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax", "pr"], cordex_domain="AFR-22", rcp="rcp26", gcm="MPI", rcm="REMO", years_up_to=2030, obs=False, bias_correction=True, historical=False)
+# Get ISIMIP bias-corrected data (no additional bias correction needed)
+Togo_climate_data = cavapy.get_climate_data(
+    country="Togo", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="AFR-22", 
+    rcp="rcp26", 
+    gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    dataset="CORDEX-CORE-BC"  # Pre-bias-corrected with ISIMIP methodology
+)
 ```
-### Non bias-corrected climate projections
+
+**Option 2: Apply bias correction on-the-fly (Original method)**
+```
+import cavapy
+# Apply empirical quantile mapping bias correction
+Togo_climate_data = cavapy.get_climate_data(
+    country="Togo", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="AFR-22", 
+    rcp="rcp26", 
+    gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    bias_correction=True, 
+    dataset="CORDEX-CORE"  # Original data with on-the-fly bias correction
+)
+```
+### Non bias-corrected climate projections (Original CORDEX-CORE data)
 
 ```
 import cavapy
-Togo_climate_data = cavapy.get_climate_data(country="Togo",variables=["tasmax", "pr"], cordex_domain="AFR-22", rcp="rcp26", gcm="MPI", rcm="REMO", years_up_to=2030, obs=False, bias_correction=False, historical=False)
+# Get original CORDEX-CORE data without any bias correction
+Togo_climate_data = cavapy.get_climate_data(
+    country="Togo", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="AFR-22", 
+    rcp="rcp26", 
+    gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    dataset="CORDEX-CORE"  # Original data, no bias correction
+)
 ```
-### Bias-corrected climate projections plus the historical run
+### Climate projections plus historical run
 
-This is useful when assessing changes in crop yield from the historical period. In this case, we provide the bias-corrected historical run of the climate models plus the bias-corrected projections. 
+This is useful when assessing changes from the historical period. 
 
+**With ISIMIP bias-corrected data:**
 ```
 import cavapy
-Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax", "pr"], cordex_domain="AFR-22", rcp="rcp26", gcm="MPI", rcm="REMO", years_up_to=2030, obs=False, bias_correction=True, historical=True)
+# Get both historical and projection data (ISIMIP bias-corrected)
+Togo_climate_data = cavapy.get_climate_data(
+    country="Togo", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="AFR-22", 
+    rcp="rcp26", 
+    gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    historical=True,
+    dataset="CORDEX-CORE-BC"  # Pre-bias-corrected data
+)
+```
+
+**With on-the-fly bias correction:**
+```
+import cavapy
+# Apply bias correction to both historical and projection data
+Togo_climate_data = cavapy.get_climate_data(
+    country="Togo", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="AFR-22", 
+    rcp="rcp26", 
+    gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    bias_correction=True, 
+    historical=True,
+    dataset="CORDEX-CORE"
+)
 ```
 ### Observations only (ERA5)
 

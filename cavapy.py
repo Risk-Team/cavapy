@@ -63,6 +63,7 @@ VALID_DOMAINS = [
 VALID_RCPS = ["rcp26", "rcp85"]
 VALID_GCM = ["MOHC", "MPI", "NCC"]
 VALID_RCM = ["REMO", "Reg"]
+VALID_DATASETS = ["CORDEX-CORE", "CORDEX-CORE-BC"]
 
 INVENTORY_DATA_REMOTE_URL = (
     "https://hub.ipcc.ifca.es/thredds/fileServer/inventories/cava.csv"
@@ -98,6 +99,7 @@ def get_climate_data(
     variables: list[str] | None = None,
     num_processes: int = len(VALID_VARIABLES),
     max_threads_per_process: int = 8,
+    dataset: str = "CORDEX-CORE",
 ) -> dict[str, xr.DataArray]:
     f"""
     Process climate data required by pyAEZ climate module.
@@ -132,6 +134,7 @@ def get_climate_data(
     num_processes (int): Number of processes to use, one per variable.
         By default equals to the number of all possible variables. (default: {len(VALID_VARIABLES)}).
     max_threads_per_process (int): Max number of threads within each process. (default: 8).
+    dataset (str): Dataset source to use. Options are "CORDEX-CORE" (original data) or "CORDEX-CORE-BC" (ISIMIP bias-corrected data). (default: "CORDEX-CORE").
 
     Returns:
     dict: A dictionary containing processed climate data for each variable as an xarray object.
@@ -140,9 +143,13 @@ def get_climate_data(
     # For observations only:
     data = get_climate_data(country="Togo", obs=True, years_obs=range(1990, 2011))
     
-    # For CORDEX projections:
+    # For original CORDEX-CORE projections:
     data = get_climate_data(country="Togo", cordex_domain="AFR-22", rcp="rcp26", 
                            gcm="MPI", rcm="Reg", years_up_to=2030)
+    
+    # For ISIMIP bias-corrected CORDEX-CORE projections:
+    data = get_climate_data(country="Togo", cordex_domain="AFR-22", rcp="rcp26", 
+                           gcm="MPI", rcm="Reg", years_up_to=2030, dataset="CORDEX-CORE-BC")
     """
 
     # Validation for basic parameters
@@ -195,6 +202,19 @@ def get_climate_data(
         if years_obs is None:
             years_obs = DEFAULT_YEARS_OBS
 
+    # Validate dataset parameter
+    if dataset not in VALID_DATASETS:
+        raise ValueError(
+            f"Invalid dataset='{dataset}'. Must be one of {VALID_DATASETS}"
+        )
+    
+    # Check for incompatible dataset and bias_correction combination
+    if dataset == "CORDEX-CORE-BC" and bias_correction:
+        raise ValueError(
+            "Cannot apply bias_correction=True when using dataset='CORDEX-CORE-BC'. "
+            "The CORDEX-CORE-BC dataset is already bias-corrected using ISIMIP methodology."
+        )
+    
     # Validate variables if provided
     if variables is not None:
         invalid_vars = [var for var in variables if var not in VALID_VARIABLES]
@@ -209,7 +229,7 @@ def get_climate_data(
     if not obs:
         _validate_gcm_rcm_combinations(cordex_domain, gcm, rcm)
 
-    _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction)
+    _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction, dataset)
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
 
@@ -233,6 +253,7 @@ def get_climate_data(
                         "bias_correction": bias_correction,
                         "historical": historical,
                         "remote": remote,
+                        "dataset": dataset,
                     },
                 )
             )
@@ -256,6 +277,7 @@ def _validate_urls(
     obs: bool = False,
     historical: bool = False,
     bias_correction: bool = False,
+    dataset: str = "CORDEX-CORE",
 ):
     # Load the data
     log = logger.getChild("URL-validation")
@@ -274,10 +296,13 @@ def _validate_urls(
         if historical or bias_correction:
             experiments.append("historical")
 
+        # Determine activity filter based on dataset
+        activity_filter = "FAO" if dataset == "CORDEX-CORE" else "CRDX-ISIMIP-025"
+        
         # Filter the data based on the conditions
         filtered_data = data[
             lambda x: (
-                x["activity"].str.contains("FAO", na=False)
+                x["activity"].str.contains(activity_filter, na=False)
                 & (x["domain"] == cordex_domain)
                 & (x["model"].str.contains(gcm, na=False))
                 & (x["rcm"].str.contains(rcm, na=False))
@@ -604,6 +629,7 @@ def _climate_data_for_variable(
     bias_correction: bool,
     historical: bool,
     remote: bool,
+    dataset: str = "CORDEX-CORE",
 ) -> xr.DataArray:
     log = logger.getChild(variable)
 
@@ -619,8 +645,11 @@ def _climate_data_for_variable(
     if historical or bias_correction:
         experiments.append("historical")
         
+    # Determine activity filter based on dataset
+    activity_filter = "FAO" if dataset == "CORDEX-CORE" else "CRDX-ISIMIP-025"
+    
     filtered_data = data[
-        lambda x: (x["activity"].str.contains("FAO", na=False))
+        lambda x: (x["activity"].str.contains(activity_filter, na=False))
         & (x["domain"] == cordex_domain)
         & (x["model"].str.contains(gcm, na=False))
         & (x["rcm"].str.contains(rcm, na=False))
