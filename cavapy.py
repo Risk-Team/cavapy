@@ -80,6 +80,34 @@ ERA5_DATA_LOCAL_PATH = os.path.join(
 DEFAULT_YEARS_OBS = range(1980, 2006)
 
 
+def _normalize_lat_lon(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
+    """
+    Ensure coords/dims are called 'latitude' and 'longitude' (not lat/lon).
+    Works for both Dataset and DataArray (or subclass).
+    """
+    renames: dict[str, str] = {}
+
+    # Dims
+    if ("lon" in getattr(ds, "dims", ())) and \
+       ("longitude" not in getattr(ds, "dims", ())):
+        renames["lon"] = "longitude"
+    if ("lat" in getattr(ds, "dims", ())) and \
+       ("latitude" not in getattr(ds, "dims", ())):
+        renames["lat"] = "latitude"
+
+    # Coords
+    if ("lon" in getattr(ds, "coords", {})) and \
+       ("longitude" not in getattr(ds, "coords", {})):
+        renames["lon"] = "longitude"
+    if ("lat" in getattr(ds, "coords", {})) and \
+       ("latitude" not in getattr(ds, "coords", {})):
+        renames["lat"] = "latitude"
+
+    if renames:
+        ds = ds.rename(renames)
+    return ds
+
+
 def get_climate_data(
     *,
     country: str | None,
@@ -138,18 +166,6 @@ def get_climate_data(
 
     Returns:
     dict: A dictionary containing processed climate data for each variable as an xarray object.
-    
-    Examples:
-    # For observations only:
-    data = get_climate_data(country="Togo", obs=True, years_obs=range(1990, 2011))
-    
-    # For original CORDEX-CORE projections:
-    data = get_climate_data(country="Togo", cordex_domain="AFR-22", rcp="rcp26", 
-                           gcm="MPI", rcm="Reg", years_up_to=2030)
-    
-    # For ISIMIP bias-corrected CORDEX-CORE projections:
-    data = get_climate_data(country="Togo", cordex_domain="AFR-22", rcp="rcp26", 
-                           gcm="MPI", rcm="Reg", years_up_to=2030, dataset="CORDEX-CORE-BC")
     """
 
     # Validation for basic parameters
@@ -261,9 +277,6 @@ def get_climate_data(
         results = {
             variable: futures[i].get() for i, variable in enumerate(variables)
         }
-
-        pool.close()  # Prevent any more tasks from being submitted to the pool
-        pool.join()  # Wait for all worker processes to finish
 
     return results
 
@@ -384,7 +397,6 @@ def _geo_localize(
     ylim = (ylim[0] - buffer, ylim[1] + buffer)
 
     # Only validate CORDEX domain when processing non-observational data
-    # Skip validation for observations or when using dummy values
     if not obs and cordex_domain:
         _validate_cordex_domain(xlim, ylim, cordex_domain)
 
@@ -438,14 +450,14 @@ def _validate_gcm_rcm_combinations(cordex_domain: str, gcm: str, rcm: str):
 
 def _validate_cordex_domain(xlim, ylim, cordex_domain):
 
-    # CORDEX domains data
+    # CORDEX domains data (your original table)
     cordex_domains_df = pd.DataFrame(
         {
             "min_lon": [
                 -33,
                 -28.3,
                 89.25,
-                86.75,
+                -152.75,
                 19.25,
                 44.0,
                 -106.25,
@@ -469,7 +481,7 @@ def _validate_cordex_domain(xlim, ylim, cordex_domain):
                 20,
                 18,
                 147.0,
-                -152.75,
+                140.25,
                 116.25,
                 -172.0,
                 -16.25,
@@ -593,6 +605,54 @@ def _leave_one_out_bias_correction(ref, hist, variable, log):
     return hist_bs
 
 
+def _validate_filtered_data(filtered_data, data, activity_filter, cordex_domain, 
+                            gcm, rcm, rcp, dataset, experiments, variable):
+    """
+    Validate that filtered data is not empty and required experiments exist.
+    
+    Raises ValueError with helpful information if data is missing.
+    """
+    if len(filtered_data) == 0:
+        # Get available options
+        activity_mask = data["activity"].str.contains(activity_filter, na=False)
+        domain_mask = activity_mask & (data["domain"] == cordex_domain)
+        
+        available = {
+            "domains": sorted(data[activity_mask]["domain"].dropna().unique()),
+            "gcms": sorted(data[domain_mask]["model"].dropna().unique()),
+            "rcms": sorted(data[domain_mask]["rcm"].dropna().unique()),
+            "experiments": sorted(
+                data[domain_mask & 
+                     data["model"].str.contains(gcm, na=False) & 
+                     data["rcm"].str.contains(rcm, na=False)]["experiment"].dropna().unique()
+            )
+        }
+        
+        raise ValueError(
+            f"No data found for {variable}.\n"
+            f"Requested: domain={cordex_domain}, gcm={gcm}, rcm={rcm}, rcp={rcp}, dataset={dataset}\n\n"
+            f"Available for '{dataset}':\n"
+            f"  Domains: {available['domains']}\n"
+            f"  GCMs in {cordex_domain}: {available['gcms']}\n"
+            f"  RCMs in {cordex_domain}: {available['rcms']}\n"
+            f"  Experiments for {gcm}-{rcm}: {available['experiments']}"
+        )
+    
+    # Check for missing required experiments
+    missing = []
+    for exp in experiments:
+        if exp not in filtered_data["experiment"].values:
+            missing.append(exp)
+    
+    if missing:
+        available_exps = filtered_data["experiment"].tolist()
+        raise ValueError(
+            f"Missing experiment(s) {missing} for {variable}.\n"
+            f"Available: {available_exps}\n"
+            f"Domain: {cordex_domain}, GCM: {gcm}, RCM: {rcm}, Dataset: {dataset}"
+        )
+
+
 def process_worker(num_threads, **kwargs) -> xr.DataArray:
     variable = kwargs["variable"]
     log = logger.getChild(variable)
@@ -647,6 +707,10 @@ def _climate_data_for_variable(
         & (x["rcm"].str.contains(rcm, na=False))
         & (x["experiment"].isin(experiments))
     ][["experiment", column_to_use]]
+    
+    # Validate that data was found
+    _validate_filtered_data(filtered_data, data, activity_filter, cordex_domain, 
+                           gcm, rcm, rcp, dataset, experiments, variable)
 
     future_obs = None
     if obs or bias_correction:
@@ -820,12 +884,31 @@ def _download_data(
             msg = f"Variable {variable} is not available for this model: {url}"
             log.exception(msg)
             raise ValueError(msg)
-            
+
+        # NEW: normalize lat/lon -> latitude/longitude for BC (and any CORDEX) data
+        ds_var = _normalize_lat_lon(ds_var)
+
         log.info(f"Connection to CORDEX data for {variable} has been established")
-        ds_cropped = ds_var.sel(
-            longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-            latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-        )
+
+        # NEW: crop taking into account latitude orientation
+        lon_min, lon_max = bbox["xlim"]
+        lat_min, lat_max = bbox["ylim"]
+
+        lon = ds_var["longitude"]
+        lat = ds_var["latitude"]
+
+        # longitude in CORDEX is increasing in both BC and non-BC, but we handle general case
+        lon_slice = slice(lon_min, lon_max)
+
+        # latitude: non-BC is decreasing, BC is increasing → detect and slice accordingly
+        if lat.size > 1 and float(lat[0]) > float(lat[-1]):
+            # decreasing (e.g. 42.75 → -46.25)
+            lat_slice = slice(lat_max, lat_min)
+        else:
+            # increasing (e.g. -46.25 → 42.75)
+            lat_slice = slice(lat_min, lat_max)
+
+        ds_cropped = ds_var.sel(longitude=lon_slice, latitude=lat_slice)
 
         # Unit conversion
         if variable in ["tas", "tasmax", "tasmin"]:
@@ -860,6 +943,15 @@ def _download_data(
     # subset years
     ds_cropped = ds_cropped.sel(time=time_mask)
 
+    # NEW: guard against empty time axis (prevents interpolate_na IndexError)
+    if ds_cropped.sizes.get("time", 0) == 0:
+        msg = (
+            f"No time steps found after subsetting for years {years[0]}–{years[-1]} "
+            f"({'ERA5' if obs else url}). Check years_up_to / years_obs and dataset coverage."
+        )
+        log.error(msg)
+        raise ValueError(msg)
+
     assert isinstance(ds_cropped, xr.DataArray)
 
     if obs:
@@ -891,28 +983,6 @@ def plot_spatial_map(
 ) -> plt.Figure:
     """
     Create a spatial map visualization of climate data.
-    
-    Args:
-        data (xr.DataArray): Climate data array with latitude/longitude coordinates
-        time_period (tuple, optional): (start_year, end_year) to subset data. If None, uses all data
-        aggregation (str): Temporal aggregation method ('mean', 'sum', 'min', 'max', 'std')
-        title (str, optional): Plot title. If None, auto-generated
-        cmap (str): Colormap name
-        figsize (tuple): Figure size (width, height)
-        show_countries (bool): Whether to show country boundaries
-        save_path (str, optional): Path to save the plot
-        **kwargs: Additional arguments passed to the plot function
-        
-    Returns:
-        matplotlib.figure.Figure: The created figure
-        
-    Examples:
-        # Plot mean temperature for 2020-2030
-        fig = plot_spatial_map(data['tasmax'], time_period=(2020, 2030), 
-                              title="Mean Max Temperature 2020-2030")
-        
-        # Plot precipitation sum with custom colormap
-        fig = plot_spatial_map(data['pr'], aggregation='sum', cmap='Blues')
     """
     
     # Subset data by time period if specified
@@ -1011,29 +1081,6 @@ def plot_time_series(
 ) -> plt.Figure:
     """
     Create time series plots of climate data.
-    
-    Args:
-        data (xr.DataArray or list): Single DataArray or list of DataArrays to plot
-        aggregation (str): Spatial aggregation method ('mean', 'sum', 'min', 'max', 'std')
-        labels (list, optional): Labels for multiple datasets
-        title (str, optional): Plot title
-        ylabel (str, optional): Y-axis label
-        figsize (tuple): Figure size
-        trend_line (bool): Whether to add trend line
-        save_path (str, optional): Path to save the plot
-        **kwargs: Additional arguments passed to plot function
-        
-    Returns:
-        matplotlib.figure.Figure: The created figure
-        
-    Examples:
-        # Plot single time series
-        fig = plot_time_series(data['tasmax'], title="Temperature Trends")
-        
-        # Compare multiple scenarios
-        fig = plot_time_series([data1['pr'], data2['pr']], 
-                              labels=['RCP2.6', 'RCP8.5'], 
-                              title="Precipitation Comparison")
     """
     
     # Ensure data is a list
@@ -1164,11 +1211,5 @@ if __name__ == "__main__":
     # Example 5: Plotting demonstrations (commented out to avoid blocking)
     print("\nPlotting functionality is available!")
     print("Use plot_spatial_map() and plot_time_series() functions")
-    
-    # Uncomment these lines to see actual plots:
-    # fig1 = plot_spatial_map(obs_data['tasmax'], time_period=(2000, 2010), 
-    #                        title="Mean Max Temperature 2000-2010 (ERA5)", cmap="Reds")
-    # fig2 = plot_time_series(obs_data['pr'], title="Precipitation Time Series (Togo)", 
-    #                        trend_line=True)
     
     print("Example completed successfully!")
