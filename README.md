@@ -15,7 +15,7 @@
 --------------------------------------------------------------------------------------------------
 ⚠️ **Check GitHub issues for known servers' downtimes**
 
-🎉 **NEW: We have released bias-corrected CORDEX-CORE simulations with the ISIMIP methodology for the AFR-22 domain!** 🌍 This allows non-expert users to directly use these datasets and avoid the need for custom bias-correction. 📊 Additional domains will be released throughout 2025.
+🎉 **NEW: We have released bias-corrected CORDEX-CORE simulations with the ISIMIP methodology for the AFR-22 and WAS-22 domains!** 🌍 This allows non-expert users to directly use these datasets and avoid the need for custom bias-correction. 📊 Additional domains will be released throughout 2025 and 2026.
 
 --------------------------------------------------------------------------------------------------
 
@@ -80,6 +80,8 @@ Since bias-correction requires both the historical run of the CORDEX model and t
 ### Bias-corrected climate projections
 
 **Option 1: Use pre-bias-corrected ISIMIP data (Recommended)**
+
+*Example with AFR-22 domain:*
 ```
 import cavapy
 # Get ISIMIP bias-corrected data (no additional bias correction needed)
@@ -88,6 +90,22 @@ Togo_climate_data = cavapy.get_climate_data(
     variables=["tasmax", "pr"], 
     cordex_domain="AFR-22", 
     rcp="rcp26", 
+    gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    dataset="CORDEX-CORE-BC"  # Pre-bias-corrected with ISIMIP methodology
+)
+```
+
+*Example with WAS-22 domain:*
+```
+import cavapy
+# Get ISIMIP bias-corrected data for West Asia
+Pakistan_climate_data = cavapy.get_climate_data(
+    country="Pakistan", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="WAS-22", 
+    rcp="rcp85", 
     gcm="MPI", 
     rcm="REMO", 
     years_up_to=2030, 
@@ -132,6 +150,8 @@ Togo_climate_data = cavapy.get_climate_data(
 This is useful when assessing changes from the historical period. 
 
 **With ISIMIP bias-corrected data:**
+
+*Example with AFR-22 domain:*
 ```
 import cavapy
 # Get both historical and projection data (ISIMIP bias-corrected)
@@ -141,6 +161,23 @@ Togo_climate_data = cavapy.get_climate_data(
     cordex_domain="AFR-22", 
     rcp="rcp26", 
     gcm="MPI", 
+    rcm="REMO", 
+    years_up_to=2030, 
+    historical=True,
+    dataset="CORDEX-CORE-BC"  # Pre-bias-corrected data
+)
+```
+
+*Example with WAS-22 domain:*
+```
+import cavapy
+# Get both historical and projection data for West Asia (ISIMIP bias-corrected)
+Afghanistan_climate_data = cavapy.get_climate_data(
+    country="Afghanistan", 
+    variables=["tasmax", "pr"], 
+    cordex_domain="WAS-22", 
+    rcp="rcp85", 
+    gcm="NCC", 
     rcm="REMO", 
     years_up_to=2030, 
     historical=True,

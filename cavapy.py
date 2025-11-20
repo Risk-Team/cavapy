@@ -1144,7 +1144,23 @@ if __name__ == "__main__":
     )
     print("Projection data keys:", list(proj_data.keys()))
     
-    # Example 3: Test new country lookup functionality
+    # Example 3: Get CORDEX-CORE-BC (ISIMIP bias-corrected) data
+    print("\nGetting CORDEX-CORE-BC (ISIMIP bias-corrected) data...")
+    proj_data_bc = get_climate_data(
+        country="Togo",
+        variables=["pr", "tasmax"],
+        cordex_domain="AFR-22",
+        rcp="rcp85",
+        gcm="MPI",
+        rcm="Reg",
+        years_up_to=2030,
+        historical=True,
+        bias_correction=False,  # Must be False when using CORDEX-CORE-BC
+        dataset="CORDEX-CORE-BC"
+    )
+    print("CORDEX-CORE-BC data keys:", list(proj_data_bc.keys()))
+    
+    # Example 4: Test new country lookup functionality
     print("\nTesting country lookup functionality...")
     try:
         # Test cartopy-based country lookup
@@ -1153,7 +1169,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Country lookup failed: {e}")
     
-    # Example 4: Plotting demonstrations (commented out to avoid blocking)
+    # Example 5: Plotting demonstrations (commented out to avoid blocking)
     print("\nPlotting functionality is available!")
     print("Use plot_spatial_map() and plot_time_series() functions")
     
