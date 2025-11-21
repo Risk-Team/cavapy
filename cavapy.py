@@ -80,43 +80,41 @@ ERA5_DATA_LOCAL_PATH = os.path.join(
 DEFAULT_YEARS_OBS = range(1980, 2006)
 
 
-def _normalize_lat_lon(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
+def _ensure_inventory_not_empty(
+    filtered_data: pd.DataFrame,
+    *,
+    dataset: str,
+    cordex_domain: str,
+    gcm: str,
+    rcm: str,
+    experiments: list[str],
+    activity_filter: str,
+    log: logging.Logger | None = None,
+) -> None:
     """
-    Ensure coords/dims are called 'latitude' and 'longitude' (not lat/lon).
-    Works for both Dataset and DataArray (or subclass).
+    Ensure that the inventory filter returned at least one URL.
+    If not, raise a clear, informative error instead of failing later with iloc[0].
     """
-    renames: dict[str, str] = {}
+    if not filtered_data.empty:
+        return
 
-    # Dims
-    if ("lon" in getattr(ds, "dims", ())) and \
-       ("longitude" not in getattr(ds, "dims", ())):
-        renames["lon"] = "longitude"
-    if ("lat" in getattr(ds, "dims", ())) and \
-       ("latitude" not in getattr(ds, "dims", ())):
-        renames["lat"] = "latitude"
+    msg = (
+        "No CORDEX entries found in the inventory for the requested configuration.\n"
+        f"  dataset        : {dataset}\n"
+        f"  domain         : {cordex_domain}\n"
+        f"  gcm            : {gcm}\n"
+        f"  rcm            : {rcm}\n"
+        f"  experiments    : {experiments}\n"
+        f"  activity_filter: {activity_filter}\n\n"
+        "This usually means that this GCM/RCM/experiment combination does not exist "
+        "or that ther is an issue with the inventory data.\n"
+        "Please check the inventory CSV at https://hub.ipcc.ifca.es/thredds/fileServer/inventories/cava.csv"
+    )
 
-    # Coords
-    if ("lon" in getattr(ds, "coords", {})) and \
-       ("longitude" not in getattr(ds, "coords", {})):
-        renames["lon"] = "longitude"
-    if ("lat" in getattr(ds, "coords", {})) and \
-       ("latitude" not in getattr(ds, "coords", {})):
-        renames["lat"] = "latitude"
+    if log is not None:
+        log.error(msg)
 
-    if renames:
-        ds = ds.rename(renames)
-    return ds
-
-
-def _sort_lat_lon(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
-    """
-    Sort latitude/longitude coordinates to be increasing when present.
-    """
-    if "longitude" in getattr(ds, "coords", {}):
-        ds = ds.sortby("longitude")
-    if "latitude" in getattr(ds, "coords", {}):
-        ds = ds.sortby("latitude")
-    return ds
+    raise ValueError(msg)
 
 
 def get_climate_data(
@@ -289,6 +287,9 @@ def get_climate_data(
             variable: futures[i].get() for i, variable in enumerate(variables)
         }
 
+        pool.close()  # Prevent any more tasks from being submitted to the pool
+        pool.join()  # Wait for all worker processes to finish
+
     return results
 
 
@@ -333,6 +334,18 @@ def _validate_urls(
                 & (x["experiment"].isin(experiments))
             )
         ][["experiment", column_to_use]]
+
+        # Fail early if nothing is found
+        _ensure_inventory_not_empty(
+            filtered_data,
+            dataset=dataset,
+            cordex_domain=cordex_domain,
+            gcm=gcm,
+            rcm=rcm,
+            experiments=experiments,
+            activity_filter=activity_filter,
+            log=log,
+        )
 
         # Extract the column values as a list
         for _, row in filtered_data.iterrows():
@@ -416,6 +429,7 @@ def _geo_localize(
     ylim = (ylim[0] - buffer, ylim[1] + buffer)
 
     # Only validate CORDEX domain when processing non-observational data
+    # Skip validation for observations or when using dummy values
     if not obs and cordex_domain:
         _validate_cordex_domain(xlim, ylim, cordex_domain)
 
@@ -469,14 +483,14 @@ def _validate_gcm_rcm_combinations(cordex_domain: str, gcm: str, rcm: str):
 
 def _validate_cordex_domain(xlim, ylim, cordex_domain):
 
-    # CORDEX domains data (your original table)
+    # CORDEX domains data
     cordex_domains_df = pd.DataFrame(
         {
             "min_lon": [
                 -33,
                 -28.3,
                 89.25,
-                -152.75,
+                86.75,
                 19.25,
                 44.0,
                 -106.25,
@@ -500,7 +514,7 @@ def _validate_cordex_domain(xlim, ylim, cordex_domain):
                 20,
                 18,
                 147.0,
-                140.25,
+                -152.75,
                 116.25,
                 -172.0,
                 -16.25,
@@ -624,54 +638,6 @@ def _leave_one_out_bias_correction(ref, hist, variable, log):
     return hist_bs
 
 
-def _validate_filtered_data(filtered_data, data, activity_filter, cordex_domain, 
-                            gcm, rcm, rcp, dataset, experiments, variable):
-    """
-    Validate that filtered data is not empty and required experiments exist.
-    
-    Raises ValueError with helpful information if data is missing.
-    """
-    if len(filtered_data) == 0:
-        # Get available options
-        activity_mask = data["activity"].str.contains(activity_filter, na=False)
-        domain_mask = activity_mask & (data["domain"] == cordex_domain)
-        
-        available = {
-            "domains": sorted(data[activity_mask]["domain"].dropna().unique()),
-            "gcms": sorted(data[domain_mask]["model"].dropna().unique()),
-            "rcms": sorted(data[domain_mask]["rcm"].dropna().unique()),
-            "experiments": sorted(
-                data[domain_mask & 
-                     data["model"].str.contains(gcm, na=False) & 
-                     data["rcm"].str.contains(rcm, na=False)]["experiment"].dropna().unique()
-            )
-        }
-        
-        raise ValueError(
-            f"No data found for {variable}.\n"
-            f"Requested: domain={cordex_domain}, gcm={gcm}, rcm={rcm}, rcp={rcp}, dataset={dataset}\n\n"
-            f"Available for '{dataset}':\n"
-            f"  Domains: {available['domains']}\n"
-            f"  GCMs in {cordex_domain}: {available['gcms']}\n"
-            f"  RCMs in {cordex_domain}: {available['rcms']}\n"
-            f"  Experiments for {gcm}-{rcm}: {available['experiments']}"
-        )
-    
-    # Check for missing required experiments
-    missing = []
-    for exp in experiments:
-        if exp not in filtered_data["experiment"].values:
-            missing.append(exp)
-    
-    if missing:
-        available_exps = filtered_data["experiment"].tolist()
-        raise ValueError(
-            f"Missing experiment(s) {missing} for {variable}.\n"
-            f"Available: {available_exps}\n"
-            f"Domain: {cordex_domain}, GCM: {gcm}, RCM: {rcm}, Dataset: {dataset}"
-        )
-
-
 def process_worker(num_threads, **kwargs) -> xr.DataArray:
     variable = kwargs["variable"]
     log = logger.getChild(variable)
@@ -726,10 +692,18 @@ def _climate_data_for_variable(
         & (x["rcm"].str.contains(rcm, na=False))
         & (x["experiment"].isin(experiments))
     ][["experiment", column_to_use]]
-    
-    # Validate that data was found
-    _validate_filtered_data(filtered_data, data, activity_filter, cordex_domain, 
-                           gcm, rcm, rcp, dataset, experiments, variable)
+
+    # Fail early if nothing is found
+    _ensure_inventory_not_empty(
+        filtered_data,
+        dataset=dataset,
+        cordex_domain=cordex_domain,
+        gcm=gcm,
+        rcm=rcm,
+        experiments=experiments,
+        activity_filter=activity_filter,
+        log=log,
+    )
 
     future_obs = None
     if obs or bias_correction:
@@ -826,7 +800,7 @@ def _climate_data_for_variable(
 
 def _thread_download_data(url: str | None, **kwargs):
     variable = kwargs["variable"]
-    temporal = "observations" if kwargs["obs"] else ("historical" if "historical" in str(url) else "projections")
+    temporal = "observations" if kwargs["obs"] else ("historical" if url and "historical" in url else "projections")
     log = logger.getChild(f"{variable}-{temporal}")
     try:
         return _download_data(url=url, **kwargs)
@@ -871,8 +845,6 @@ def _download_data(
                 latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
             )
 
-        ds_cropped = _sort_lat_lon(ds_cropped)
-
         # Unit conversion
         if var in ["t2mx", "t2mn", "t2m"]:
             ds_cropped -= 273.15  # Convert from Kelvin to Celsius
@@ -905,32 +877,12 @@ def _download_data(
             msg = f"Variable {variable} is not available for this model: {url}"
             log.exception(msg)
             raise ValueError(msg)
-
-        # NEW: normalize lat/lon -> latitude/longitude for BC (and any CORDEX) data
-        ds_var = _normalize_lat_lon(ds_var)
-
+            
         log.info(f"Connection to CORDEX data for {variable} has been established")
-
-        # NEW: crop taking into account latitude orientation
-        lon_min, lon_max = bbox["xlim"]
-        lat_min, lat_max = bbox["ylim"]
-
-        lon = ds_var["longitude"]
-        lat = ds_var["latitude"]
-
-        # longitude in CORDEX is increasing in both BC and non-BC, but we handle general case
-        lon_slice = slice(lon_min, lon_max)
-
-        # latitude: non-BC is decreasing, BC is increasing → detect and slice accordingly
-        if lat.size > 1 and float(lat[0]) > float(lat[-1]):
-            # decreasing (e.g. 42.75 → -46.25)
-            lat_slice = slice(lat_max, lat_min)
-        else:
-            # increasing (e.g. -46.25 → 42.75)
-            lat_slice = slice(lat_min, lat_max)
-
-        ds_cropped = ds_var.sel(longitude=lon_slice, latitude=lat_slice)
-        ds_cropped = _sort_lat_lon(ds_cropped)
+        ds_cropped = ds_var.sel(
+            longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+            latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
+        )
 
         # Unit conversion
         if variable in ["tas", "tasmax", "tasmin"]:
@@ -965,15 +917,6 @@ def _download_data(
     # subset years
     ds_cropped = ds_cropped.sel(time=time_mask)
 
-    # NEW: guard against empty time axis (prevents interpolate_na IndexError)
-    if ds_cropped.sizes.get("time", 0) == 0:
-        msg = (
-            f"No time steps found after subsetting for years {years[0]}–{years[-1]} "
-            f"({'ERA5' if obs else url}). Check years_up_to / years_obs and dataset coverage."
-        )
-        log.error(msg)
-        raise ValueError(msg)
-
     assert isinstance(ds_cropped, xr.DataArray)
 
     if obs:
@@ -1006,7 +949,6 @@ def plot_spatial_map(
     """
     Create a spatial map visualization of climate data.
     """
-    
     # Subset data by time period if specified
     plot_data = data.copy()
     if time_period is not None:
@@ -1060,10 +1002,10 @@ def plot_spatial_map(
     
     # Add gridlines with labels only on left and bottom
     gl = ax.gridlines(draw_labels=True, alpha=0.3)
-    gl.top_labels = False     # No labels on top
-    gl.right_labels = False   # No labels on right
-    gl.left_labels = True     # Labels on left (latitude)
-    gl.bottom_labels = True   # Labels on bottom (longitude)
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.left_labels = True
+    gl.bottom_labels = True
     
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
@@ -1104,7 +1046,6 @@ def plot_time_series(
     """
     Create time series plots of climate data.
     """
-    
     # Ensure data is a list
     if isinstance(data, xr.DataArray):
         data_list = [data]
@@ -1146,8 +1087,8 @@ def plot_time_series(
             z = np.polyfit(annual_data.year, annual_data.values, 1)
             p = np.poly1d(z)
             ax1.plot(annual_data.year, p(annual_data.year), 
-                    linestyle='--', alpha=0.7, 
-                    color=ax1.lines[-1].get_color())
+                     linestyle='--', alpha=0.7, 
+                     color=ax1.lines[-1].get_color())
     
     # Format main plot
     ax1.set_xlabel("Year", fontsize=12)
@@ -1176,7 +1117,6 @@ def plot_time_series(
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     return fig
-
 
 
 if __name__ == "__main__":
