@@ -108,6 +108,17 @@ def _normalize_lat_lon(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArr
     return ds
 
 
+def _sort_lat_lon(ds: xr.Dataset | xr.DataArray) -> xr.Dataset | xr.DataArray:
+    """
+    Sort latitude/longitude coordinates to be increasing when present.
+    """
+    if "longitude" in getattr(ds, "coords", {}):
+        ds = ds.sortby("longitude")
+    if "latitude" in getattr(ds, "coords", {}):
+        ds = ds.sortby("latitude")
+    return ds
+
+
 def get_climate_data(
     *,
     country: str | None,
@@ -852,6 +863,8 @@ def _download_data(
                 latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
             )
 
+        ds_cropped = _sort_lat_lon(ds_cropped)
+
         # Unit conversion
         if var in ["t2mx", "t2mn", "t2m"]:
             ds_cropped -= 273.15  # Convert from Kelvin to Celsius
@@ -909,6 +922,7 @@ def _download_data(
             lat_slice = slice(lat_min, lat_max)
 
         ds_cropped = ds_var.sel(longitude=lon_slice, latitude=lat_slice)
+        ds_cropped = _sort_lat_lon(ds_cropped)
 
         # Unit conversion
         if variable in ["tas", "tasmax", "tasmin"]:
