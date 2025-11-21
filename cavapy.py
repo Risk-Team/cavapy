@@ -361,6 +361,14 @@ def _get_country_bounds(country_name: str) -> tuple[float, float, float, float]:
     Raises:
         ValueError: If country not found
     """
+    # Use Natural Earth countries dataset via cartopy
+    countries_feature = cfeature.NaturalEarthFeature(
+        'cultural', 'admin_0_countries', '50m'
+    )
+    
+    # Get the actual shapefile path from the feature
+    shapefile_path = countries_feature.with_scale('50m').geometries()
+    
     # Search for the country using Natural Earth records
     for country_record in shpreader.Reader(shpreader.natural_earth(resolution='50m', category='cultural', name='admin_0_countries')).records():
         # Try multiple name fields for better matching
