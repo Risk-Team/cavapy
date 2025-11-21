@@ -63,6 +63,7 @@ VALID_DOMAINS = [
 VALID_RCPS = ["rcp26", "rcp85"]
 VALID_GCM = ["MOHC", "MPI", "NCC"]
 VALID_RCM = ["REMO", "Reg"]
+VALID_DATASETS = ["CORDEX-CORE", "CORDEX-CORE-BC"]
 
 INVENTORY_DATA_REMOTE_URL = (
     "https://hub.ipcc.ifca.es/thredds/fileServer/inventories/cava.csv"
@@ -77,6 +78,43 @@ ERA5_DATA_LOCAL_PATH = os.path.join(
     os.path.expanduser("~"), "shared/data/observations/ERA5/0.25/ERA5_025.ncml"
 )
 DEFAULT_YEARS_OBS = range(1980, 2006)
+
+
+def _ensure_inventory_not_empty(
+    filtered_data: pd.DataFrame,
+    *,
+    dataset: str,
+    cordex_domain: str,
+    gcm: str,
+    rcm: str,
+    experiments: list[str],
+    activity_filter: str,
+    log: logging.Logger | None = None,
+) -> None:
+    """
+    Ensure that the inventory filter returned at least one URL.
+    If not, raise a clear, informative error instead of failing later with iloc[0].
+    """
+    if not filtered_data.empty:
+        return
+
+    msg = (
+        "No CORDEX entries found in the inventory for the requested configuration.\n"
+        f"  dataset        : {dataset}\n"
+        f"  domain         : {cordex_domain}\n"
+        f"  gcm            : {gcm}\n"
+        f"  rcm            : {rcm}\n"
+        f"  experiments    : {experiments}\n"
+        f"  activity_filter: {activity_filter}\n\n"
+        "This usually means that this GCM/RCM/experiment combination does not exist "
+        "or that ther is an issue with the inventory data.\n"
+        "Please check the inventory CSV at https://hub.ipcc.ifca.es/thredds/fileServer/inventories/cava.csv"
+    )
+
+    if log is not None:
+        log.error(msg)
+
+    raise ValueError(msg)
 
 
 def get_climate_data(
@@ -98,6 +136,7 @@ def get_climate_data(
     variables: list[str] | None = None,
     num_processes: int = len(VALID_VARIABLES),
     max_threads_per_process: int = 8,
+    dataset: str = "CORDEX-CORE",
 ) -> dict[str, xr.DataArray]:
     f"""
     Process climate data required by pyAEZ climate module.
@@ -132,17 +171,10 @@ def get_climate_data(
     num_processes (int): Number of processes to use, one per variable.
         By default equals to the number of all possible variables. (default: {len(VALID_VARIABLES)}).
     max_threads_per_process (int): Max number of threads within each process. (default: 8).
+    dataset (str): Dataset source to use. Options are "CORDEX-CORE" (original data) or "CORDEX-CORE-BC" (ISIMIP bias-corrected data). (default: "CORDEX-CORE").
 
     Returns:
     dict: A dictionary containing processed climate data for each variable as an xarray object.
-    
-    Examples:
-    # For observations only:
-    data = get_climate_data(country="Togo", obs=True, years_obs=range(1990, 2011))
-    
-    # For CORDEX projections:
-    data = get_climate_data(country="Togo", cordex_domain="AFR-22", rcp="rcp26", 
-                           gcm="MPI", rcm="Reg", years_up_to=2030)
     """
 
     # Validation for basic parameters
@@ -195,6 +227,19 @@ def get_climate_data(
         if years_obs is None:
             years_obs = DEFAULT_YEARS_OBS
 
+    # Validate dataset parameter
+    if dataset not in VALID_DATASETS:
+        raise ValueError(
+            f"Invalid dataset='{dataset}'. Must be one of {VALID_DATASETS}"
+        )
+    
+    # Check for incompatible dataset and bias_correction combination
+    if dataset == "CORDEX-CORE-BC" and bias_correction:
+        raise ValueError(
+            "Cannot apply bias_correction=True when using dataset='CORDEX-CORE-BC'. "
+            "The CORDEX-CORE-BC dataset is already bias-corrected using ISIMIP methodology."
+        )
+    
     # Validate variables if provided
     if variables is not None:
         invalid_vars = [var for var in variables if var not in VALID_VARIABLES]
@@ -209,7 +254,7 @@ def get_climate_data(
     if not obs:
         _validate_gcm_rcm_combinations(cordex_domain, gcm, rcm)
 
-    _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction)
+    _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction, dataset)
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
 
@@ -233,6 +278,7 @@ def get_climate_data(
                         "bias_correction": bias_correction,
                         "historical": historical,
                         "remote": remote,
+                        "dataset": dataset,
                     },
                 )
             )
@@ -256,6 +302,7 @@ def _validate_urls(
     obs: bool = False,
     historical: bool = False,
     bias_correction: bool = False,
+    dataset: str = "CORDEX-CORE",
 ):
     # Load the data
     log = logger.getChild("URL-validation")
@@ -274,16 +321,31 @@ def _validate_urls(
         if historical or bias_correction:
             experiments.append("historical")
 
+        # Determine activity filter based on dataset
+        activity_filter = "FAO" if dataset == "CORDEX-CORE" else "CRDX-ISIMIP-025"
+        
         # Filter the data based on the conditions
         filtered_data = data[
             lambda x: (
-                x["activity"].str.contains("FAO", na=False)
+                x["activity"].str.contains(activity_filter, na=False)
                 & (x["domain"] == cordex_domain)
                 & (x["model"].str.contains(gcm, na=False))
                 & (x["rcm"].str.contains(rcm, na=False))
                 & (x["experiment"].isin(experiments))
             )
         ][["experiment", column_to_use]]
+
+        # Fail early if nothing is found
+        _ensure_inventory_not_empty(
+            filtered_data,
+            dataset=dataset,
+            cordex_domain=cordex_domain,
+            gcm=gcm,
+            rcm=rcm,
+            experiments=experiments,
+            activity_filter=activity_filter,
+            log=log,
+        )
 
         # Extract the column values as a list
         for _, row in filtered_data.iterrows():
@@ -604,6 +666,7 @@ def _climate_data_for_variable(
     bias_correction: bool,
     historical: bool,
     remote: bool,
+    dataset: str = "CORDEX-CORE",
 ) -> xr.DataArray:
     log = logger.getChild(variable)
 
@@ -619,13 +682,28 @@ def _climate_data_for_variable(
     if historical or bias_correction:
         experiments.append("historical")
         
+    # Determine activity filter based on dataset
+    activity_filter = "FAO" if dataset == "CORDEX-CORE" else "CRDX-ISIMIP-025"
+    
     filtered_data = data[
-        lambda x: (x["activity"].str.contains("FAO", na=False))
+        lambda x: (x["activity"].str.contains(activity_filter, na=False))
         & (x["domain"] == cordex_domain)
         & (x["model"].str.contains(gcm, na=False))
         & (x["rcm"].str.contains(rcm, na=False))
         & (x["experiment"].isin(experiments))
     ][["experiment", column_to_use]]
+
+    # Fail early if nothing is found
+    _ensure_inventory_not_empty(
+        filtered_data,
+        dataset=dataset,
+        cordex_domain=cordex_domain,
+        gcm=gcm,
+        rcm=rcm,
+        experiments=experiments,
+        activity_filter=activity_filter,
+        log=log,
+    )
 
     future_obs = None
     if obs or bias_correction:
@@ -722,7 +800,7 @@ def _climate_data_for_variable(
 
 def _thread_download_data(url: str | None, **kwargs):
     variable = kwargs["variable"]
-    temporal = "observations" if kwargs["obs"] else ("historical" if "historical" in str(url) else "projections")
+    temporal = "observations" if kwargs["obs"] else ("historical" if url and "historical" in url else "projections")
     log = logger.getChild(f"{variable}-{temporal}")
     try:
         return _download_data(url=url, **kwargs)
@@ -870,30 +948,7 @@ def plot_spatial_map(
 ) -> plt.Figure:
     """
     Create a spatial map visualization of climate data.
-    
-    Args:
-        data (xr.DataArray): Climate data array with latitude/longitude coordinates
-        time_period (tuple, optional): (start_year, end_year) to subset data. If None, uses all data
-        aggregation (str): Temporal aggregation method ('mean', 'sum', 'min', 'max', 'std')
-        title (str, optional): Plot title. If None, auto-generated
-        cmap (str): Colormap name
-        figsize (tuple): Figure size (width, height)
-        show_countries (bool): Whether to show country boundaries
-        save_path (str, optional): Path to save the plot
-        **kwargs: Additional arguments passed to the plot function
-        
-    Returns:
-        matplotlib.figure.Figure: The created figure
-        
-    Examples:
-        # Plot mean temperature for 2020-2030
-        fig = plot_spatial_map(data['tasmax'], time_period=(2020, 2030), 
-                              title="Mean Max Temperature 2020-2030")
-        
-        # Plot precipitation sum with custom colormap
-        fig = plot_spatial_map(data['pr'], aggregation='sum', cmap='Blues')
     """
-    
     # Subset data by time period if specified
     plot_data = data.copy()
     if time_period is not None:
@@ -947,10 +1002,10 @@ def plot_spatial_map(
     
     # Add gridlines with labels only on left and bottom
     gl = ax.gridlines(draw_labels=True, alpha=0.3)
-    gl.top_labels = False     # No labels on top
-    gl.right_labels = False   # No labels on right
-    gl.left_labels = True     # Labels on left (latitude)
-    gl.bottom_labels = True   # Labels on bottom (longitude)
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.left_labels = True
+    gl.bottom_labels = True
     
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
@@ -990,31 +1045,7 @@ def plot_time_series(
 ) -> plt.Figure:
     """
     Create time series plots of climate data.
-    
-    Args:
-        data (xr.DataArray or list): Single DataArray or list of DataArrays to plot
-        aggregation (str): Spatial aggregation method ('mean', 'sum', 'min', 'max', 'std')
-        labels (list, optional): Labels for multiple datasets
-        title (str, optional): Plot title
-        ylabel (str, optional): Y-axis label
-        figsize (tuple): Figure size
-        trend_line (bool): Whether to add trend line
-        save_path (str, optional): Path to save the plot
-        **kwargs: Additional arguments passed to plot function
-        
-    Returns:
-        matplotlib.figure.Figure: The created figure
-        
-    Examples:
-        # Plot single time series
-        fig = plot_time_series(data['tasmax'], title="Temperature Trends")
-        
-        # Compare multiple scenarios
-        fig = plot_time_series([data1['pr'], data2['pr']], 
-                              labels=['RCP2.6', 'RCP8.5'], 
-                              title="Precipitation Comparison")
     """
-    
     # Ensure data is a list
     if isinstance(data, xr.DataArray):
         data_list = [data]
@@ -1056,8 +1087,8 @@ def plot_time_series(
             z = np.polyfit(annual_data.year, annual_data.values, 1)
             p = np.poly1d(z)
             ax1.plot(annual_data.year, p(annual_data.year), 
-                    linestyle='--', alpha=0.7, 
-                    color=ax1.lines[-1].get_color())
+                     linestyle='--', alpha=0.7, 
+                     color=ax1.lines[-1].get_color())
     
     # Format main plot
     ax1.set_xlabel("Year", fontsize=12)
@@ -1088,7 +1119,6 @@ def plot_time_series(
     return fig
 
 
-
 if __name__ == "__main__":
     # Example 1: Get observational data
     print("Getting observational data...")
@@ -1115,7 +1145,23 @@ if __name__ == "__main__":
     )
     print("Projection data keys:", list(proj_data.keys()))
     
-    # Example 3: Test new country lookup functionality
+    # Example 3: Get CORDEX-CORE-BC (ISIMIP bias-corrected) data
+    print("\nGetting CORDEX-CORE-BC (ISIMIP bias-corrected) data...")
+    proj_data_bc = get_climate_data(
+        country="Togo",
+        variables=["pr", "tasmax"],
+        cordex_domain="AFR-22",
+        rcp="rcp85",
+        gcm="MPI",
+        rcm="Reg",
+        years_up_to=2030,
+        historical=True,
+        bias_correction=False,  # Must be False when using CORDEX-CORE-BC
+        dataset="CORDEX-CORE-BC"
+    )
+    print("CORDEX-CORE-BC data keys:", list(proj_data_bc.keys()))
+    
+    # Example 4: Test new country lookup functionality
     print("\nTesting country lookup functionality...")
     try:
         # Test cartopy-based country lookup
@@ -1124,14 +1170,8 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Country lookup failed: {e}")
     
-    # Example 4: Plotting demonstrations (commented out to avoid blocking)
+    # Example 5: Plotting demonstrations (commented out to avoid blocking)
     print("\nPlotting functionality is available!")
     print("Use plot_spatial_map() and plot_time_series() functions")
-    
-    # Uncomment these lines to see actual plots:
-    # fig1 = plot_spatial_map(obs_data['tasmax'], time_period=(2000, 2010), 
-    #                        title="Mean Max Temperature 2000-2010 (ERA5)", cmap="Reds")
-    # fig2 = plot_time_series(obs_data['pr'], title="Precipitation Time Series (Togo)", 
-    #                        trend_line=True)
     
     print("Example completed successfully!")
