@@ -71,6 +71,11 @@ The get_climate_data function performs automatically:
 - Convert into a Gregorian calendar (CORDEX-CORE models do not have a full 365 days calendar) through linear interpolation
 - Bias correction using the empirical quantile mapping (optional)
 
+### Parallelization strategy
+- If you request a single model/rcp combination, cavapy parallelizes **across variables**.
+- If you request multiple models and/or RCPs, cavapy parallelizes **across model/RCP combinations** and processes variables sequentially per combination.
+- By default, up to **6 model/RCP processes** are used (capped by the number of combinations).
+
 ## Example usage
 
 Depending on the interest, downloading climate data can be done in a few different ways. Note that GCM stands for General Circulation Model while RCM stands for Regional Climate Model. As the climate data comes from the CORDEX-CORE initiative, users can choose between 3 different GCMs downscaled with two RCMs. In total, there are six simulations for any given domain (except for CAS-22 where only three are available).
@@ -207,6 +212,44 @@ Togo_climate_data = cavapy.get_climate_data(
 ```
 import cavapy
 Togo_climate_data = cavapy.get_climate_data(country="Togo", variables=["tasmax", "pr"], obs=True,  years_obs=range(1980,2019))
+```
+
+### Multiple models and/or RCPs
+
+You can pass lists (or None) to `rcp`, `gcm`, and `rcm`. If multiple combinations are requested,
+the return structure becomes nested:
+
+```
+results[rcp][f"{gcm}-{rcm}"][variable] -> DataArray
+```
+
+Example: all models and both RCPs for Togo (AFR-22):
+```
+import cavapy
+
+data = cavapy.get_climate_data(
+    country="Togo",
+    cordex_domain="AFR-22",
+    rcp=None,          # all RCPs
+    gcm=None,          # all GCMs
+    rcm=None,          # all RCMs
+    years_up_to=2030,
+    historical=True,
+    dataset="CORDEX-CORE",
+)
+```
+
+Example: specific models and RCPs:
+```
+data = cavapy.get_climate_data(
+    country="Togo",
+    cordex_domain="AFR-22",
+    rcp=["rcp26", "rcp85"],
+    gcm=["MPI", "MOHC"],
+    rcm=["Reg", "REMO"],
+    years_up_to=2030,
+    historical=True,
+)
 ```
 
 ## Plotting Functionality
