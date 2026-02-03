@@ -13,7 +13,7 @@
 
 
 --------------------------------------------------------------------------------------------------
-⚠️ **Check GitHub issues for known servers' downtimes**
+⚠️ **Check GitHub issues for known server downtime**
 
 🎉 **NEW: We have released bias-corrected CORDEX-CORE simulations with the ISIMIP methodology for the AFR-22 and WAS-22 domains!** 🌍 This allows non-expert users to directly use these datasets and avoid the need for custom bias-correction. 📊 Additional domains will be released throughout 2025 and 2026.
 
@@ -31,19 +31,19 @@ With `cavapy`, users can efficiently integrate CORDEX-CORE data into their workf
 
 The climate data provided by `cavapy` is hosted on the THREDDS data server of the University of Cantabria as part of the CAVA project. CAVA is a collaborative effort by FAO, the University of Cantabria, the University of Cape Town, and Predictia, aimed at democratising accessibility and usability of climate information.
 
-### Available Datasets via capapy:
+### Available Datasets via cavapy:
 - **CORDEX-CORE Simulations**: Dynamically downscaled high-resolution (25 km) climate models, used in the IPCC AR5 report, featuring simulations from:
   - 3 Global Climate Models (GCMs)
   - 2 Regional Climate Models (RCMs)
   - Two Representative Concentration Pathways (RCPs: RCP2.6 and RCP8.5)
-- **Reanalyses Dataset**:
+- **Reanalysis Dataset**:
   - ERA5 (used for the optional bias correction of the CORDEX-CORE projections)
 
 ---
 
 ## Available Variables
 
-`cavapy` grants access to critical climate variables, enabling integration into diverse modeling frameworks. The variables currently available include:
+`cavapy` grants access to critical climate variables, enabling integration into diverse modeling frameworks. The currently available variables include:
 
 - **Daily Maximum Temperature (tasmax)**: °C  
 - **Daily Minimum Temperature (tasmin)**: °C  
@@ -68,13 +68,51 @@ pip install cavapy
 The get_climate_data function performs automatically:
 - Data retrieval in parallel
 - Unit conversion
-- Convert into a Gregorian calendar (CORDEX-CORE models do not have a full 365 days calendar) through linear interpolation
+- Conversion to a Gregorian calendar (CORDEX-CORE models do not have a full 365-day calendar) through linear interpolation
 - Bias correction using the empirical quantile mapping (optional)
 
-### Parallelization strategy
-- If you request a single model/rcp combination, cavapy parallelizes **across variables**.
-- If you request multiple models and/or RCPs, cavapy parallelizes **across model/RCP combinations** and processes variables sequentially per combination.
-- By default, up to **6 model/RCP processes** are used (capped by the number of combinations).
+### Parallelization Strategy
+
+`cavapy` uses a two-level parallelization strategy optimized for THREDDS/OpenDAP access:
+
+#### Level 1: Model/RCP Parallelization (Processes)
+
+- When requesting multiple models and/or RCPs, each combination runs in a separate process
+- Controlled by `max_model_processes` (default: 6)
+- Example: requesting 6 model combinations with `max_model_processes=6` runs all 6 in parallel
+
+#### Level 2: Dataset & Variable Parallelization (Threads)
+
+- Within each process, datasets (ERA5, historical, projection) are opened in parallel using threads
+- Post-processing of variables (unit conversion, bias correction) runs in parallel threads
+- Controlled by `max_threads_per_process` (auto-tuned based on flags, or set manually)
+
+#### Key Optimization
+
+All 6 variables are extracted in a single OpenDAP request per dataset, minimizing HTTP round-trips to the THREDDS server.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              multiprocessing.Pool (max_model_processes=6)       │
+├────────────────┬────────────────┬────────────────┬──────────────┤
+│   Process 1    │   Process 2    │   Process 3    │  Process 4   │
+│  MPI-rcp26     │  MPI-rcp85     │  NCC-rcp26     │  NCC-rcp85   │
+│       │        │       │        │       │        │      │       │
+│  ThreadPool    │  ThreadPool    │  ThreadPool    │ ThreadPool   │
+│  (open files,  │  (open files,  │  (open files,  │ (open files, │
+│   post-proc)   │   post-proc)   │   post-proc)   │  post-proc)  │
+└────────────────┴────────────────┴────────────────┴──────────────┘
+```
+
+#### Tuning Parallelization
+
+```python
+# Aggressive (faster, more server load)
+data = cavapy.get_climate_data(..., max_model_processes=6, max_threads_per_process=3)
+
+# Conservative (slower, gentler on server)
+data = cavapy.get_climate_data(..., max_model_processes=2, max_threads_per_process=2)
+```
 
 ## Example usage
 
@@ -235,7 +273,6 @@ data = cavapy.get_climate_data(
     rcm=None,          # all RCMs
     years_up_to=2030,
     historical=True,
-    dataset="CORDEX-CORE",
 )
 ```
 

@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "cavapy"
 version = "1.2.0"
-description = "CAVA Python package. Retrive climate data."
+description = "CAVA Python package. Retrieve climate data."
 authors = ["Riccardo Soldan <riccardosoldan@hotmail.it>", "Oleh Lokshyn <olokshyn@gmail.com>"]
 readme = "README.md"
 license = "MIT"
@@ -25,6 +25,7 @@ bottleneck = "*"
 llvmlite = "*"
 cartopy = "*"
 seaborn = "*"
+tqdm = "*"
 
 
 [build-system]

@@ -36,16 +36,17 @@ def main() -> None:
     cordex_domain = "AFR-22"
     years_up_to = 2015
     rcp = "rcp26"
-    variables_small = ["pr", "tasmax"]
+    variables_small = ["rsds", "sfcWind", "hurs"]
 
     gcm_one, rcm_one = _first_model_combo()
-    combos_six = _first_n_model_combos(6)
-    gcm_list = [g for g, _ in combos_six]
-    rcm_list = [r for _, r in combos_six]
+    combos_three = _first_n_model_combos(3)
+    gcm_list = [g for g, _ in combos_three]
+    rcm_list = [r for _, r in combos_three]
 
     scenarios: list[Scenario] = [
+        # Single model scenarios - test thread count impact
         Scenario(
-            name="single_model_all_vars_var_processes_1_thread_2",
+            name="single_model_three_vars_threads_1",
             kwargs=dict(
                 country=country,
                 cordex_domain=cordex_domain,
@@ -54,13 +55,12 @@ def main() -> None:
                 rcm=rcm_one,
                 years_up_to=years_up_to,
                 historical=True,
-                variables=None,
-                num_processes=1,
-                max_threads_per_process=2,
+                variables=variables_small,
+                max_threads_per_process=1,
             ),
         ),
         Scenario(
-            name="single_model_all_vars_var_processes_3_thread_2",
+            name="single_model_three_vars_threads_3",
             kwargs=dict(
                 country=country,
                 cordex_domain=cordex_domain,
@@ -69,28 +69,13 @@ def main() -> None:
                 rcm=rcm_one,
                 years_up_to=years_up_to,
                 historical=True,
-                variables=None,
-                num_processes=3,
-                max_threads_per_process=2,
+                variables=variables_small,
+                max_threads_per_process=3,
             ),
         ),
+        # Multi-model scenarios - test process count impact
         Scenario(
-            name="single_model_all_vars_var_processes_6_thread_2",
-            kwargs=dict(
-                country=country,
-                cordex_domain=cordex_domain,
-                rcp=rcp,
-                gcm=gcm_one,
-                rcm=rcm_one,
-                years_up_to=years_up_to,
-                historical=True,
-                variables=None,
-                num_processes=6,
-                max_threads_per_process=2,
-            ),
-        ),
-        Scenario(
-            name="six_models_two_vars_model_processes_2_thread_2",
+            name="three_models_three_vars_processes_2_threads_2",
             kwargs=dict(
                 country=country,
                 cordex_domain=cordex_domain,
@@ -105,7 +90,7 @@ def main() -> None:
             ),
         ),
         Scenario(
-            name="six_models_two_vars_model_processes_4_thread_2",
+            name="three_models_three_vars_processes_4_threads_2",
             kwargs=dict(
                 country=country,
                 cordex_domain=cordex_domain,
@@ -116,21 +101,6 @@ def main() -> None:
                 historical=True,
                 variables=variables_small,
                 max_model_processes=4,
-                max_threads_per_process=2,
-            ),
-        ),
-        Scenario(
-            name="six_models_two_vars_model_processes_6_thread_2",
-            kwargs=dict(
-                country=country,
-                cordex_domain=cordex_domain,
-                rcp=rcp,
-                gcm=gcm_list,
-                rcm=rcm_list,
-                years_up_to=years_up_to,
-                historical=True,
-                variables=variables_small,
-                max_model_processes=6,
                 max_threads_per_process=2,
             ),
         ),

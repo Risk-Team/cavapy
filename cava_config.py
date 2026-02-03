@@ -1,6 +1,5 @@
 """Configuration constants and logging setup for cavapy."""
 
-import os
 import logging
 import warnings
 
@@ -13,16 +12,16 @@ except ImportError:
     warnings.filterwarnings("ignore", category=UserWarning, module="cartopy.io")
 
 logger = logging.getLogger("climate")
-logger.handlers = []  # Remove any existing handlers
-handler = logging.StreamHandler()
 formatter = logging.Formatter(
-    "%(asctime)s | %(name)s | %(process)d:%(thread)d [%(levelname)s]: %(message)s"
+    "%(asctime)s | %(process)d [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
 )
-handler.setFormatter(formatter)
-for hdlr in logger.handlers[:]:  # remove all old handlers
-    logger.removeHandler(hdlr)
-logger.addHandler(handler)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
+logger.propagate = False
 
 VARIABLES_MAP = {
     "pr": "tp",
@@ -43,6 +42,7 @@ VALID_DOMAINS = [
     "AUS-22",
     "SAM-22",
     "CAM-22",
+    "CAS-22",
 ]
 VALID_RCPS = ["rcp26", "rcp85"]
 VALID_GCM = ["MOHC", "MPI", "NCC"]
@@ -52,13 +52,13 @@ VALID_DATASETS = ["CORDEX-CORE", "CORDEX-CORE-BC"]
 INVENTORY_DATA_REMOTE_URL = (
     "https://hub.ipcc.ifca.es/thredds/fileServer/inventories/cava.csv"
 )
-INVENTORY_DATA_LOCAL_PATH = os.path.join(
-    os.path.expanduser("~"), "shared/inventories/cava/inventory.csv"
-)
 ERA5_DATA_REMOTE_URL = (
     "https://hub.ipcc.ifca.es/thredds/dodsC/fao/observations/ERA5/0.25/ERA5_025.ncml"
 )
-ERA5_DATA_LOCAL_PATH = os.path.join(
-    os.path.expanduser("~"), "shared/data/observations/ERA5/0.25/ERA5_025.ncml"
-)
 DEFAULT_YEARS_OBS = range(1980, 2006)
+
+# THREDDS connection throttling configuration
+MAX_CONCURRENT_CONNECTIONS = 8  # Limit concurrent OpenDAP connections to avoid server overload
+RETRY_BASE_DELAY_S = 2.0        # Initial retry delay in seconds
+RETRY_BACKOFF_FACTOR = 2.0      # Exponential backoff multiplier (2s -> 4s -> 8s)
+RETRY_MAX_ATTEMPTS = 3          # Maximum retry attempts for transient failures

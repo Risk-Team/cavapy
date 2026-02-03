@@ -8,7 +8,6 @@ import cartopy.io.shapereader as shpreader
 
 from cava_config import (
     ERA5_DATA_REMOTE_URL,
-    INVENTORY_DATA_LOCAL_PATH,
     INVENTORY_DATA_REMOTE_URL,
     VALID_GCM,
     VALID_RCM,
@@ -43,7 +42,7 @@ def _ensure_inventory_not_empty(
         f"  experiments    : {experiments}\n"
         f"  activity_filter: {activity_filter}\n\n"
         "This usually means that this GCM/RCM/experiment combination does not exist "
-        "or that ther is an issue with the inventory data.\n"
+        "or that there is an issue with the inventory data.\n"
         "Please check the inventory CSV at https://hub.ipcc.ifca.es/thredds/fileServer/inventories/cava.csv"
     )
 
@@ -54,11 +53,10 @@ def _ensure_inventory_not_empty(
 
 
 def _validate_urls(
-    gcm: str = None,
-    rcm: str = None,
-    rcp: str = None,
-    remote: bool = True,
-    cordex_domain: str = None,
+    gcm: str | None = None,
+    rcm: str | None = None,
+    rcp: str | None = None,
+    cordex_domain: str | None = None,
     obs: bool = False,
     historical: bool = False,
     bias_correction: bool = False,
@@ -69,13 +67,8 @@ def _validate_urls(
     log = logger.getChild("URL-validation")
 
     if obs is False:
-        inventory_csv_url = (
-            INVENTORY_DATA_REMOTE_URL if remote else INVENTORY_DATA_LOCAL_PATH
-        )
-        data = pd.read_csv(inventory_csv_url)
-
-        # Set the column to use based on whether the data is remote or local
-        column_to_use = "location" if remote else "hub"
+        data = pd.read_csv(INVENTORY_DATA_REMOTE_URL)
+        column_to_use = "location"
 
         # Define which experiments we need
         experiments = [rcp]

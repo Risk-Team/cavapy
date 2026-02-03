@@ -23,6 +23,16 @@ from cava_validation import (
 )
 
 
+def _auto_max_threads_per_process(
+    *, obs: bool, historical: bool, bias_correction: bool
+) -> int:
+    if obs or bias_correction:
+        return 3
+    if historical:
+        return 2
+    return 1
+
+
 def _get_climate_data_single(
     *,
     country: str | None,
@@ -38,16 +48,14 @@ def _get_climate_data_single(
     buffer: int = 0,
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
-    remote: bool = True,
     variables: list[str] | None = None,
-    num_processes: int = len(VALID_VARIABLES),
-    max_threads_per_process: int = 3,
+    max_threads_per_process: int | None = None,
     dataset: str = "CORDEX-CORE",
 ) -> dict[str, xr.DataArray]:
-    """Internal single-combination fetch (one rcp/gcm/rcm), preserves legacy behavior."""
+    """Fetch a single (rcp, gcm, rcm) combination with validation and processing."""
 
     # Validation for basic parameters
-    if xlim is None and ylim is not None or xlim is not None and ylim is None:
+    if (xlim is None and ylim is not None) or (xlim is not None and ylim is None):
         raise ValueError(
             "xlim and ylim mismatch: they must be both specified or both unspecified"
         )
@@ -64,7 +72,7 @@ def _get_climate_data_single(
         if not (1980 <= min(years_obs) <= max(years_obs) <= 2020):
             raise ValueError("Years in years_obs must be within the range 1980 to 2020")
         
-        # Set default values for CORDEX parameters (not used but needed for function calls)
+        # Set defaults for CORDEX parameters (not used but needed for function calls)
         cordex_domain = cordex_domain or "AFR-22"  # dummy value
         rcp = rcp or "rcp26"  # dummy value
         gcm = gcm or "MPI"  # dummy value
@@ -123,76 +131,35 @@ def _get_climate_data_single(
     if not obs:
         _validate_gcm_rcm_combinations(cordex_domain, gcm, rcm)
 
-    _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction, dataset)
+    _validate_urls(gcm, rcm, rcp, cordex_domain, obs, historical, bias_correction, dataset)
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
 
-    if num_processes <= 1 or len(variables) <= 1:
-        results = {}
-        for variable in variables:
-            try:
-                results[variable] = process_worker(
-                    max_threads_per_process,
-                    variable=variable,
-                    bbox=bbox,
-                    cordex_domain=cordex_domain,
-                    rcp=rcp,
-                    gcm=gcm,
-                    rcm=rcm,
-                    years_up_to=years_up_to,
-                    years_obs=years_obs,
-                    obs=obs,
-                    bias_correction=bias_correction,
-                    historical=historical,
-                    remote=remote,
-                    dataset=dataset,
-                )
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Variable '{variable}' failed for {gcm}-{rcm} {rcp}"
-                ) from exc
-        return results
+    if max_threads_per_process is None:
+        max_threads_per_process = _auto_max_threads_per_process(
+            obs=obs, historical=historical, bias_correction=bias_correction
+        )
 
-    with mp.Pool(processes=min(num_processes, len(variables))) as pool:
-        futures = []
-        for variable in variables:
-            futures.append(
-                pool.apply_async(
-                    process_worker,
-                    args=(max_threads_per_process,),
-                    kwds={
-                        "variable": variable,
-                        "bbox": bbox,
-                        "cordex_domain": cordex_domain,
-                        "rcp": rcp,
-                        "gcm": gcm,
-                        "rcm": rcm,
-                        "years_up_to": years_up_to,
-                        "years_obs": years_obs,
-                        "obs": obs,
-                        "bias_correction": bias_correction,
-                        "historical": historical,
-                        "remote": remote,
-                        "dataset": dataset,
-                    },
-                )
-            )
-
-        try:
-            results = {
-                variable: futures[i].get() for i, variable in enumerate(variables)
-            }
-        except Exception as exc:
-            pool.terminate()
-            pool.join()
-            raise RuntimeError(
-                f"Variable processing failed for {gcm}-{rcm} {rcp}"
-            ) from exc
-
-        pool.close()  # Prevent any more tasks from being submitted to the pool
-        pool.join()  # Wait for all worker processes to finish
-
-    return results
+    try:
+        return process_worker(
+            max_threads_per_process,
+            variables=variables,
+            bbox=bbox,
+            cordex_domain=cordex_domain,
+            rcp=rcp,
+            gcm=gcm,
+            rcm=rcm,
+            years_up_to=years_up_to,
+            years_obs=years_obs,
+            obs=obs,
+            bias_correction=bias_correction,
+            historical=historical,
+            dataset=dataset,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Variable processing failed for {gcm}-{rcm} {rcp}"
+        ) from exc
 
 
 def _normalize_selection(
@@ -214,18 +181,13 @@ def _normalize_selection(
     return values, False
 
 
-def _run_combo_task(
-    rcp_val: str,
-    gcm_val: str,
-    rcm_val: str,
-    common_kwargs: dict,
-    max_threads_per_process: int,
-):
+def _run_combo_task(args: tuple):
+    """Wrapper for imap_unordered - takes single tuple argument."""
+    rcp_val, gcm_val, rcm_val, common_kwargs, max_threads_per_process = args
     data = _get_climate_data_single(
         rcp=rcp_val,
         gcm=gcm_val,
         rcm=rcm_val,
-        num_processes=1,
         max_threads_per_process=max_threads_per_process,
         **common_kwargs,
     )
@@ -247,12 +209,10 @@ def get_climate_data(
     buffer: int = 0,
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
-    remote: bool = True,
     variables: list[str] | None = None,
-    num_processes: int = len(VALID_VARIABLES),
-    max_threads_per_process: int = 3,
-    dataset: str = "CORDEX-CORE",
+    max_threads_per_process: int | None = None,
     max_model_processes: int = 6,
+    dataset: str = "CORDEX-CORE",
 ) -> dict:
     """
     Retrieve CORDEX-CORE projections and/or ERA5 observations for a region.
@@ -260,46 +220,47 @@ def get_climate_data(
     The function orchestrates validation, spatial subsetting, unit conversion,
     optional bias correction, and parallel download/processing.
 
+    Parallelization:
+        Uses a two-level strategy optimized for THREDDS/OpenDAP:
+        - Level 1 (Processes): Model/RCP combinations run in parallel processes
+        - Level 2 (Threads): Within each process, datasets are opened and
+          variables post-processed in parallel threads
+        - All variables are batch-extracted in a single OpenDAP request per dataset
+
     Args:
-    country (str): Name of the country for which data is to be processed.
-        Use None if specifying a region using xlim and ylim.
-    years_obs (range): Range of years for observational data (ERA5 only). Required when obs is True. (default: None).
-    obs (bool): Flag to indicate if processing observational data (default: False).
-        When True, only years_obs is required. CORDEX parameters are optional.
-    cordex_domain (str): CORDEX domain of the climate data. One of {VALID_DOMAINS}.
-        Required when obs is False. (default: None).
-    rcp (str | list[str] | None): Representative Concentration Pathway(s). One of {VALID_RCPS}.
-        If None, all RCPs are used. Required when obs is False. (default: None).
-    gcm (str | list[str] | None): GCM name(s). One of {VALID_GCM}.
-        If None, all GCMs are used. Required when obs is False. (default: None).
-    rcm (str | list[str] | None): RCM name(s). One of {VALID_RCM}.
-        If None, all RCMs are used. Required when obs is False. (default: None).
-    years_up_to (int): The ending year for the projected data. Projections start in 2006 and ends in 2100.
-        Hence, if years_up_to is set to 2030, data will be downloaded for the 2006-2030 period.
-        Required when obs is False. (default: None).
-    bias_correction (bool): Whether to apply bias correction (default: False).
-    historical (bool): Flag to indicate if processing historical data (default: False).
-        If True, historical data is provided together with projections.
-        Historical simulation runs for CORDEX-CORE initiative are provided for the 1980-2005 time period.
-    buffer (int): Buffer distance to expand the region of interest (default: 0).
-    xlim (tuple or None): Longitudinal bounds of the region of interest. Use only when country is None (default: None).
-    ylim (tuple or None): Latitudinal bounds of the region of interest. Use only when country is None (default: None).
-    remote (bool): Flag to work with remote data or not (default: True).
-    variables (list[str] or None): List of variables to process. Must be a subset of {VALID_VARIABLES}. If None, all variables are processed. (default: None).
-    num_processes (int): Number of processes to use, one per variable.
-        By default equals to the number of all possible variables. (default: {len(VALID_VARIABLES)}).
-    max_threads_per_process (int): Max number of threads within each process. (default: 3).
-    dataset (str): Dataset source to use. Options are "CORDEX-CORE" (original data) or "CORDEX-CORE-BC" (ISIMIP bias-corrected data). (default: "CORDEX-CORE").
-    max_model_processes (int): Max number of processes for model/RCP combinations when multiple are requested.
-        Defaults to 6.
+        country (str): Country name for spatial subsetting. Use None with xlim/ylim.
+        years_obs (range | None): Observation years (ERA5). Required when obs=True.
+        obs (bool): When True, uses ERA5 observations; CORDEX params are ignored.
+        cordex_domain (str | None): CORDEX domain. Required when obs=False.
+        rcp (str | list[str] | None): RCP(s) to request. None means all.
+        gcm (str | list[str] | None): GCM(s) to request. None means all.
+        rcm (str | list[str] | None): RCM(s) to request. None means all.
+        years_up_to (int | None): Projection end year (>=2007). Required when obs=False.
+        bias_correction (bool): Apply bias correction (not allowed with CORDEX-CORE-BC).
+        historical (bool): Include 1980-2005 historical runs with projections.
+        buffer (int): Degrees to expand bounding box.
+        xlim (tuple[float, float] | None): Longitude bounds (min, max).
+        ylim (tuple[float, float] | None): Latitude bounds (min, max).
+        variables (list[str] | None): Variable subset. None means all.
+        max_threads_per_process (int | None): Threads per process for opening datasets
+            and post-processing variables. Auto-tuned if None: 3 threads when
+            bias_correction or obs, 2 when historical, else 1.
+        max_model_processes (int): Max parallel processes for model/RCP combinations.
+            Default 6. Increase for faster multi-model requests (more server load).
+        dataset (str): "CORDEX-CORE" or "CORDEX-CORE-BC".
 
     Returns:
-    dict: If a single (gcm, rcm, rcp) is requested, returns {variable: DataArray}.
-          If multiple are requested, returns {rcp: {"{gcm}-{rcm}": {variable: DataArray}}}.
+        dict: If a single (gcm, rcm, rcp) is requested, returns {variable: DataArray}.
+            If multiple are requested, returns {rcp: {"{gcm}-{rcm}": {variable: DataArray}}}.
     """
 
     if obs and any(isinstance(v, list) for v in (rcp, gcm, rcm) if v is not None):
         raise ValueError("rcp/gcm/rcm lists are not supported when obs=True")
+
+    if max_threads_per_process is None:
+        max_threads_per_process = _auto_max_threads_per_process(
+            obs=obs, historical=historical, bias_correction=bias_correction
+        )
 
     if obs:
         return _get_climate_data_single(
@@ -316,9 +277,7 @@ def get_climate_data(
             buffer=buffer,
             xlim=xlim,
             ylim=ylim,
-            remote=remote,
             variables=variables,
-            num_processes=num_processes,
             max_threads_per_process=max_threads_per_process,
             dataset=dataset,
         )
@@ -347,9 +306,7 @@ def get_climate_data(
             buffer=buffer,
             xlim=xlim,
             ylim=ylim,
-            remote=remote,
             variables=variables,
-            num_processes=num_processes,
             max_threads_per_process=max_threads_per_process,
             dataset=dataset,
         )
@@ -376,8 +333,7 @@ def get_climate_data(
         )
 
     results: dict[str, dict[str, dict[str, xr.DataArray]]] = {}
-    max_workers = max_model_processes
-    max_workers = max(1, min(max_workers, len(valid_combos)))
+    max_workers = min(max_model_processes, len(valid_combos))
 
     common_kwargs = {
         "country": country,
@@ -390,7 +346,6 @@ def get_climate_data(
         "buffer": buffer,
         "xlim": xlim,
         "ylim": ylim,
-        "remote": remote,
         "variables": variables,
         "dataset": dataset,
     }
@@ -402,7 +357,7 @@ def get_climate_data(
 
     with mp.Pool(processes=max_workers) as pool:
         try:
-            for rcp_val, gcm_val, rcm_val, data in pool.starmap(
+            for rcp_val, gcm_val, rcm_val, data in pool.imap_unordered(
                 _run_combo_task, tasks
             ):
                 results.setdefault(rcp_val, {})[f"{gcm_val}-{rcm_val}"] = data
@@ -413,6 +368,7 @@ def get_climate_data(
                 "Model/RCP processing failed. Enable DEBUG logs for details."
             ) from exc
 
+    logger.info("All %d model combinations completed successfully.", len(valid_combos))
     return results
 
 
@@ -421,36 +377,31 @@ if __name__ == "__main__":
     # This loops over all GCM/RCM combinations and both RCPs.
     cordex_domain = "AFR-22"
     years_up_to = 2015
-    all_models = [(gcm, rcm) for gcm in VALID_GCM for rcm in VALID_RCM]
+    print("\nGetting CORDEX-CORE BC data for multiple models in parallel...")
+    data_parallel = get_climate_data(
+        country="Togo",
+        cordex_domain=cordex_domain,
+        rcp="rcp26",
+        gcm=VALID_GCM,
+        rcm=VALID_RCM,
+        years_up_to=years_up_to,
+        historical=True,
+        dataset="CORDEX-CORE-BC",
+    )
+    print("Parallel example keys:", list(data_parallel.keys()))
 
-    def _fetch_one(dataset_name: str, rcp: str, gcm: str, rcm: str) -> tuple[str, list[str]]:
-        data = get_climate_data(
-            country="Togo",
-            cordex_domain=cordex_domain,
-            rcp=rcp,
-            gcm=gcm,
-            rcm=rcm,
-            years_up_to=years_up_to,
-            historical=True,
-            bias_correction=False,
-            dataset=dataset_name,
-        )
-        return f"{dataset_name} | {rcp} | {gcm}-{rcm}", list(data.keys())
-
-
-    print("\nGetting CORDEX-CORE-BC data for all models (sequential across models)...")
-    rcp = "rcp26"
-    for gcm, rcm in all_models:
-        label, variables = _fetch_one("CORDEX-CORE-BC", rcp, gcm, rcm)
-        print(label)
-        print("Variables:", variables)
-
-    print("Getting CORDEX-CORE data for all models (sequential across models)...")
-    rcp = "rcp26"
-    for gcm, rcm in all_models:
-        label, variables = _fetch_one("CORDEX-CORE", rcp, gcm, rcm)
-        print(label)
-        print("Variables:", variables)
-
+    print("\nGetting CORDEX-CORE data for one model with all variables...")
+    data_single_all = get_climate_data(
+        country="Togo",
+        cordex_domain=cordex_domain,
+        rcp="rcp26",
+        gcm=VALID_GCM[0],
+        rcm=VALID_RCM[0],
+        years_up_to=years_up_to,
+        historical=True,
+        dataset="CORDEX-CORE",
+        variables=None,
+    )
+    print("Single-model variables:", list(data_single_all.keys()))
 
     print("Example completed successfully!")

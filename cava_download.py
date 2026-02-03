@@ -1,8 +1,16 @@
-"""Download and post-process ERA5/CORDEX data for the CAVA pipeline."""
+"""
+Download and post-process ERA5/CORDEX data for the CAVA pipeline.
+
+Optimized for THREDDS/OpenDAP:
+1. Batch variable extraction - single OpenDAP request per dataset
+2. CPU-bound post-processing parallelized with ThreadPoolExecutor
+3. Reduced HTTP round-trips to THREDDS server
+"""
 
 import time
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import numpy as np
@@ -12,34 +20,51 @@ import xsdba as sdba
 from cava_bias import _leave_one_out_bias_correction
 from cava_config import (
     DEFAULT_YEARS_OBS,
-    ERA5_DATA_LOCAL_PATH,
     ERA5_DATA_REMOTE_URL,
-    INVENTORY_DATA_LOCAL_PATH,
     INVENTORY_DATA_REMOTE_URL,
+    MAX_CONCURRENT_CONNECTIONS,
+    RETRY_BACKOFF_FACTOR,
+    RETRY_BASE_DELAY_S,
+    RETRY_MAX_ATTEMPTS,
     VARIABLES_MAP,
     logger,
 )
 from cava_validation import _ensure_inventory_not_empty
 
+# Module-level semaphore to limit concurrent THREDDS/OpenDAP connections.
+# This prevents overwhelming the server when running multiple parallel processes.
+_THREDDS_CONNECTION_SEMAPHORE = threading.Semaphore(MAX_CONCURRENT_CONNECTIONS)
 
-def process_worker(num_threads, **kwargs) -> xr.DataArray:
-    """Run per-variable processing inside a thread pool and return the result."""
-    variable = kwargs["variable"]
-    log = logger.getChild(variable)
+
+def process_worker(
+    num_threads: int,
+    **kwargs,
+) -> dict[str, xr.DataArray]:
+    """
+    Optimized worker that:
+    1. Opens datasets with threading (I/O bound)
+    2. Batch-extracts all variables in one OpenDAP request per dataset
+    3. Parallelizes post-processing (CPU bound)
+
+    Args:
+        num_threads: Number of threads for the ThreadPoolExecutor.
+    """
+    log = logger.getChild("variables")
+
     try:
         with ThreadPoolExecutor(
             max_workers=num_threads, thread_name_prefix="climate"
         ) as executor:
-            return _climate_data_for_variable(executor, **kwargs)
+            return _climate_data_batch_optimized(executor, **kwargs)
     except Exception as e:
         log.exception(f"Process worker failed: {e}")
         raise
 
 
-def _climate_data_for_variable(
+def _climate_data_batch_optimized(
     executor: ThreadPoolExecutor,
     *,
-    variable: str,
+    variables: list[str],
     bbox: dict[str, tuple[float, float]],
     cordex_domain: str,
     rcp: str,
@@ -50,25 +75,25 @@ def _climate_data_for_variable(
     obs: bool,
     bias_correction: bool,
     historical: bool,
-    remote: bool,
     dataset: str = "CORDEX-CORE",
-) -> xr.DataArray:
-    """Fetch and process one variable, optionally bias-correcting and merging runs."""
-    log = logger.getChild(variable)
+) -> dict[str, xr.DataArray]:
+    """
+    Optimized fetch: batch extraction + parallel post-processing.
 
+    Flow:
+    1. Open datasets concurrently (I/O bound - use threads)
+    2. BATCH extract all variables + spatial subset in ONE OpenDAP call per dataset
+    3. Post-process each variable in parallel (CPU bound - use threads)
+    """
+    log = logger.getChild("inventory")
     pd.options.mode.chained_assignment = None
-    inventory_csv_url = (
-        INVENTORY_DATA_REMOTE_URL if remote else INVENTORY_DATA_LOCAL_PATH
-    )
-    data = pd.read_csv(inventory_csv_url)
-    column_to_use = "location" if remote else "hub"
+    data = pd.read_csv(INVENTORY_DATA_REMOTE_URL)
+    column_to_use = "location"
 
-    # Filter data based on whether we need historical data
     experiments = [rcp]
     if historical or bias_correction:
         experiments.append("historical")
 
-    # Determine activity filter based on dataset
     activity_filter = "FAO" if dataset == "CORDEX-CORE" else "CRDX-ISIMIP-025"
 
     filtered_data = data[
@@ -79,7 +104,6 @@ def _climate_data_for_variable(
         & (x["experiment"].isin(experiments))
     ][["experiment", column_to_use]]
 
-    # Fail early if nothing is found
     _ensure_inventory_not_empty(
         filtered_data,
         dataset=dataset,
@@ -91,175 +115,403 @@ def _climate_data_for_variable(
         log=log,
     )
 
-    future_obs = None
+    # =========================================================================
+    # PHASE 1: Open datasets concurrently (I/O bound)
+    # =========================================================================
+    obs_future = None
+    hist_future = None
+    proj_future = None
+
     if obs or bias_correction:
-        future_obs = executor.submit(
-            _thread_download_data,
-            url=None,
-            bbox=bbox,
-            variable=variable,
-            obs=True,
-            years_up_to=years_up_to,
-            years_obs=years_obs,
-            remote=remote,
-        )
+        obs_future = executor.submit(_open_dataset_with_retry, ERA5_DATA_REMOTE_URL)
 
     if not obs:
-        download_fn = partial(
-            _thread_download_data,
-            bbox=bbox,
-            variable=variable,
-            obs=False,
+        if historical or bias_correction:
+            hist_url = filtered_data[filtered_data["experiment"] == "historical"][
+                column_to_use
+            ].iloc[0]
+            proj_url = filtered_data[filtered_data["experiment"] == rcp][
+                column_to_use
+            ].iloc[0]
+            hist_future = executor.submit(_open_dataset_with_retry, hist_url)
+            proj_future = executor.submit(_open_dataset_with_retry, proj_url)
+        else:
+            proj_url = filtered_data[column_to_use].iloc[0]
+            proj_future = executor.submit(_open_dataset_with_retry, proj_url)
+
+    # =========================================================================
+    # PHASE 2: Batch extract ALL variables in ONE OpenDAP request per dataset
+    # This is the key optimization - reduces HTTP round-trips significantly
+    # =========================================================================
+    obs_ds = obs_future.result() if obs_future else None
+    hist_ds = hist_future.result() if hist_future else None
+    proj_ds = proj_future.result() if proj_future else None
+
+    model_label = f"{gcm}-{rcm} {rcp}"
+
+    # Build list of extraction tasks
+    extraction_tasks = []
+    if obs_ds and (obs or bias_correction):
+        extraction_tasks.append(("ERA5", obs_ds, True, None))
+    if hist_ds:
+        extraction_tasks.append(("historical", hist_ds, False, False))
+    if proj_ds:
+        extraction_tasks.append(("projection", proj_ds, False, True))
+
+    # Batch extract with spatial subsetting - ONE request per dataset
+    obs_batch, hist_batch, proj_batch = {}, {}, {}
+
+    for name, ds, is_obs_flag, is_proj in extraction_tasks:
+        batch = _batch_extract_variables(
+            ds,
+            variables,
+            bbox,
+            is_obs=is_obs_flag,
             years_obs=years_obs,
             years_up_to=years_up_to,
-            remote=remote,
+            is_projection=is_proj,
+            label=f"{model_label} {name}",
         )
-        downloaded_models = list(
-            executor.map(download_fn, filtered_data[column_to_use])
+        if name == "ERA5":
+            obs_batch = batch
+        elif name == "historical":
+            hist_batch = batch
+        else:
+            proj_batch = batch
+
+    # =========================================================================
+    # PHASE 3: Post-process each variable in parallel (CPU bound)
+    # Unit conversion, calendar conversion, bias correction
+    # =========================================================================
+    results: dict[str, xr.DataArray] = {}
+
+    # Submit all post-processing tasks
+    futures = {}
+    for variable in variables:
+        future = executor.submit(
+            _postprocess_variable,
+            variable=variable,
+            obs_data=obs_batch.get(variable),
+            hist_data=hist_batch.get(variable),
+            proj_data=proj_batch.get(variable),
+            obs_only=obs,
+            bias_correction=bias_correction,
+            historical=historical,
+            years_obs=years_obs,
         )
+        futures[future] = variable
 
-        # Add the downloaded models to the DataFrame
-        filtered_data["models"] = downloaded_models
+    # Collect results as they complete
+    for future in as_completed(futures):
+        variable = futures[future]
+        try:
+            results[variable] = future.result()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Variable '{variable}' post-processing failed for {gcm}-{rcm} {rcp}"
+            ) from exc
 
-        if historical or bias_correction:
-            hist = filtered_data[filtered_data["experiment"] == "historical"][
-                "models"
-            ].iloc[0]
-            proj = filtered_data[filtered_data["experiment"] == rcp]["models"].iloc[
-                0
-            ]
-
-            hist = hist.interpolate_na(dim="time", method="linear")
-            proj = proj.interpolate_na(dim="time", method="linear")
-        else:
-            proj = filtered_data["models"].iloc[0]
-            proj = proj.interpolate_na(dim="time", method="linear")
-
-        if bias_correction and historical:
-            # Load observations for bias correction
-            ref = future_obs.result()
-            log.info("Training eqm with leave-one-out cross-validation")
-
-            # Use leave-one-out cross-validation for historical bias correction
-            hist_bs = _leave_one_out_bias_correction(ref, hist, variable, log)
-
-            # For projections, train on all historical data
-            QM_mo = sdba.EmpiricalQuantileMapping.train(
-                ref,
-                hist,
-                group="time.month",
-                kind="*" if variable in ["pr", "rsds", "sfcWind"] else "+",
-            )
-
-            log.info("Performing bias correction on projections with full historical training")
-            proj_bs = QM_mo.adjust(proj, extrapolation="constant", interp="linear")
-
-            # Apply variable-specific constraints
-            if variable == "hurs":
-                hist_bs = hist_bs.where(hist_bs <= 100, 100)
-                hist_bs = hist_bs.where(hist_bs >= 0, 0)
-                proj_bs = proj_bs.where(proj_bs <= 100, 100)
-                proj_bs = proj_bs.where(proj_bs >= 0, 0)
-
-            return xr.concat([hist_bs, proj_bs], dim="time")
-
-        elif not bias_correction and historical:
-            return xr.concat([hist, proj], dim="time")
-
-        elif bias_correction and not historical:
-            # Load observations for bias correction
-            ref = future_obs.result()
-            log.info("Performing bias correction with eqm")
-            QM_mo = sdba.EmpiricalQuantileMapping.train(
-                ref,
-                proj,
-                group="time.month",
-                kind="*" if variable in ["pr", "rsds", "sfcWind"] else "+",
-            )
-            proj_bs = QM_mo.adjust(proj, extrapolation="constant", interp="linear")
-
-            # Apply variable-specific constraints
-            if variable == "hurs":
-                proj_bs = proj_bs.where(proj_bs <= 100, 100)
-                proj_bs = proj_bs.where(proj_bs >= 0, 0)
-
-            return proj_bs
-
-        else:
-            return proj
-
-    return future_obs.result()
+    return results
 
 
-def _thread_download_data(url: str | None, **kwargs):
-    """Thread entrypoint to download a single dataset with logging and error handling."""
-    variable = kwargs["variable"]
-    temporal = (
-        "observations"
-        if kwargs["obs"]
-        else ("historical" if url and "historical" in url else "projections")
-    )
-    log = logger.getChild(f"{variable}-{temporal}")
-    try:
-        return _download_data(url=url, **kwargs)
-    except Exception as e:
-        log.exception(f"Failed to process data from {url}: {e}")
-        raise
-
-
-def _download_data(
-    url: str | None,
+def _batch_extract_variables(
+    ds: xr.Dataset,
+    variables: list[str],
     bbox: dict[str, tuple[float, float]],
-    variable: str,
-    obs: bool,
+    *,
+    is_obs: bool,
     years_obs: range,
     years_up_to: int,
-    remote: bool,
-) -> xr.DataArray:
-    """Download a dataset, subset it to the bbox, and perform unit/calendar handling."""
-    temporal = (
-        "observations"
-        if obs
-        else ("historical" if url and "historical" in url else "projections")
-    )
-    log = logger.getChild(f"{variable}-{temporal}")
+    is_projection: bool | None = None,
+    label: str = "",
+) -> dict[str, xr.DataArray]:
+    """
+    Extract ALL variables from a dataset in a single operation.
 
-    def _reindex_daily(data: xr.DataArray) -> xr.DataArray:
-        """Reindex data to a daily time axis, filling missing dates with NaN."""
-        time_coord = data["time"]
-        if time_coord.size == 0:
-            return data
-        time_index = time_coord.to_index()
-        if not time_index.is_monotonic_increasing:
-            data = data.sortby("time")
-            time_coord = data["time"]
-            time_index = time_coord.to_index()
-        start = time_coord.values[0]
-        end = time_coord.values[-1]
-        if np.issubdtype(time_coord.dtype, np.datetime64):
-            full_time = pd.date_range(start=start, end=end, freq="D")
+    This is the key optimization: instead of ds[var].sel(...) for each variable,
+    we do ds[vars].sel(...) once, which translates to a single OpenDAP request.
+    """
+    log = logger.getChild("batch_extract")
+    log_prefix = f"[{label}] " if label else ""
+
+    if is_obs:
+        # Map variable names for ERA5
+        # ERA5 has variable-specific coordinate handling, so we extract individually
+        # but still benefit from the dataset being already open
+        result = {}
+        for variable in variables:
+            var_name = VARIABLES_MAP[variable]
+            if var_name not in ds.data_vars:
+                continue
+
+            ds_var = ds[var_name]
+
+            # Handle coordinate differences
+            if var_name == "hurs":
+                ds_var = ds_var.rename({"lat": "latitude", "lon": "longitude"})
+                ds_var = ds_var.sortby("latitude", ascending=False)
+            else:
+                ds_var.coords["longitude"] = (ds_var.coords["longitude"] + 180) % 360 - 180
+                ds_var = ds_var.sortby(ds_var.longitude)
+
+            # Spatial subset
+            cropped = ds_var.sel(
+                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
+            )
+
+            # Time filter for obs
+            years = list(years_obs)
+            time_mask = (cropped["time"].dt.year >= years[0]) & (
+                cropped["time"].dt.year <= years[-1]
+            )
+            # .load() fetches data into memory - critical for thread safety
+            result[variable] = cropped.sel(time=time_mask).load()
+
+        return result
+
+    else:
+        # CORDEX data - can do true batch extraction
+        # Map variable names
+        var_map = {}
+        for v in variables:
+            if v == "sfcWind":
+                dataset_var = "sfcwind" if "sfcwind" in ds.variables else "sfcWind"
+            else:
+                dataset_var = v
+            if dataset_var in ds.data_vars:
+                var_map[v] = dataset_var
+
+        if not var_map:
+            log.warning("No requested variables found in CORDEX dataset")
+            return {}
+
+        # Check for problematic time dimensions
+        for v, dv in list(var_map.items()):
+            time_dims = [dim for dim in ds[dv].dims if dim.startswith("time_")]
+            if time_dims:
+                log.warning(f"Variable {v} has problematic time dimension, skipping")
+                del var_map[v]
+
+        # BATCH spatial subsetting - this is the key optimization
+        # Select all variables at once with spatial bounds
+        dataset_vars = list(var_map.values())
+
+        # Single OpenDAP request for all variables + spatial subset
+        # .load() fetches data into memory - critical for thread safety
+        log.info(f"{log_prefix}Batch extracting {len(dataset_vars)} variables with spatial subset...")
+        subset = ds[dataset_vars].sel(
+            longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+            latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
+        ).load()
+
+        # Determine time range
+        if is_projection:
+            years = list(range(2006, years_up_to + 1))
         else:
-            calendar = (
-                time_coord.encoding.get("calendar")
-                or time_coord.attrs.get("calendar")
-                or "standard"
-            )
-            full_time = xr.cftime_range(
-                start=start, end=end, freq="D", calendar=calendar
-            )
-        if len(full_time) != time_coord.size:
-            log.warning(
-                "Reindexing time to daily range (%d steps); filling %d missing dates with NaN.",
-                len(full_time),
-                len(full_time) - time_coord.size,
-            )
-        return data.reindex(time=full_time)
+            years = list(DEFAULT_YEARS_OBS)
 
-    def _open_dataset_with_retry(
-        url_or_path: str, *, retries: int = 3, delay_s: float = 2.0
-    ) -> xr.Dataset:
-        """Open a dataset with retries to mitigate transient network failures."""
-        last_exc = None
+        # Extract individual DataArrays with time filtering
+        result = {}
+        for orig_var, dataset_var in var_map.items():
+            da = subset[dataset_var]
+
+            # Calendar conversion
+            try:
+                da = da.convert_calendar(
+                    calendar="gregorian", missing=np.nan, align_on="date"
+                )
+            except ValueError as exc:
+                msg = str(exc)
+                if "date_range_like" in msg and "frequency was not inferable" in msg:
+                    log.warning("Time frequency not inferable; reindexing before calendar conversion.")
+                    da = _reindex_daily(da, log=log)
+                    da = da.convert_calendar(
+                        calendar="gregorian", missing=np.nan, align_on="date"
+                    )
+                    da = _reindex_daily(da, log=log)
+                else:
+                    raise
+
+            # Time filter
+            time_mask = (da["time"].dt.year >= years[0]) & (
+                da["time"].dt.year <= years[-1]
+            )
+            result[orig_var] = da.sel(time=time_mask)
+
+        log.info(
+            "%sBatch extraction completed (%d variables).",
+            log_prefix,
+            len(result),
+        )
+        return result
+
+
+def _postprocess_variable(
+    *,
+    variable: str,
+    obs_data: xr.DataArray | None,
+    hist_data: xr.DataArray | None,
+    proj_data: xr.DataArray | None,
+    obs_only: bool,
+    bias_correction: bool,
+    historical: bool,
+    years_obs: range,
+) -> xr.DataArray:
+    """
+    Post-process a single variable: unit conversion + optional bias correction.
+
+    This is CPU-bound work that benefits from parallelization.
+    """
+    log = logger.getChild(variable)
+
+    # Unit conversion for observations
+    ref = None
+    if obs_data is not None:
+        ref = _apply_unit_conversion_obs(obs_data, variable)
+
+    if obs_only:
+        return ref
+
+    # Unit conversion for CORDEX data
+    hist = None
+    proj = None
+
+    if hist_data is not None:
+        hist = _apply_unit_conversion_cordex(hist_data, variable)
+        hist = hist.interpolate_na(dim="time", method="linear")
+
+    if proj_data is not None:
+        proj = _apply_unit_conversion_cordex(proj_data, variable)
+        proj = proj.interpolate_na(dim="time", method="linear")
+
+    # Bias correction and merging
+    if bias_correction and historical and hist is not None and proj is not None:
+        log.info("Training EQM with leave-one-out cross-validation")
+        hist_bs = _leave_one_out_bias_correction(ref, hist, variable, log)
+
+        QM_mo = sdba.EmpiricalQuantileMapping.train(
+            ref,
+            hist,
+            group="time.month",
+            kind="*" if variable in ["pr", "rsds", "sfcWind"] else "+",
+        )
+        log.info("Performing bias correction on projections")
+        proj_bs = QM_mo.adjust(proj, extrapolation="constant", interp="linear")
+
+        if variable == "hurs":
+            hist_bs = hist_bs.clip(0, 100)
+            proj_bs = proj_bs.clip(0, 100)
+
+        return xr.concat([hist_bs, proj_bs], dim="time")
+
+    elif not bias_correction and historical and hist is not None and proj is not None:
+        return xr.concat([hist, proj], dim="time")
+
+    elif bias_correction and not historical and proj is not None:
+        log.info("Performing bias correction with EQM")
+        QM_mo = sdba.EmpiricalQuantileMapping.train(
+            ref,
+            proj,
+            group="time.month",
+            kind="*" if variable in ["pr", "rsds", "sfcWind"] else "+",
+        )
+        proj_bs = QM_mo.adjust(proj, extrapolation="constant", interp="linear")
+
+        if variable == "hurs":
+            proj_bs = proj_bs.clip(0, 100)
+
+        return proj_bs
+
+    else:
+        return proj
+
+
+def _apply_unit_conversion_obs(data: xr.DataArray, variable: str) -> xr.DataArray:
+    """Apply unit conversion for ERA5 observations."""
+    var = VARIABLES_MAP[variable]
+
+    if var in ["t2mx", "t2mn", "t2m"]:
+        data = data - 273.15
+        data.attrs["units"] = "°C"
+    elif var == "tp":
+        data = data * 1000
+        data.attrs["units"] = "mm"
+    elif var == "ssrd":
+        data = data / 86400
+        data.attrs["units"] = "W m-2"
+    elif var == "sfcwind":
+        data = data * (4.87 / np.log((67.8 * 10) - 5.42))
+        data.attrs["units"] = "m s-1"
+
+    return data
+
+
+def _apply_unit_conversion_cordex(data: xr.DataArray, variable: str) -> xr.DataArray:
+    """Apply unit conversion for CORDEX data."""
+    if variable in ["tas", "tasmax", "tasmin"]:
+        data = data - 273.15
+        data.attrs["units"] = "°C"
+    elif variable == "pr":
+        data = data * 86400
+        data.attrs["units"] = "mm"
+    elif variable == "rsds":
+        data.attrs["units"] = "W m-2"
+    elif variable == "sfcWind":
+        data = data * (4.87 / np.log((67.8 * 10) - 5.42))
+        data.attrs["units"] = "m s-1"
+
+    return data
+
+
+def _reindex_daily(data: xr.DataArray, *, log: logging.Logger) -> xr.DataArray:
+    """Reindex data to a daily time axis, filling missing dates with NaN."""
+    time_coord = data["time"]
+    if time_coord.size == 0:
+        return data
+    time_index = time_coord.to_index()
+    if not time_index.is_monotonic_increasing:
+        data = data.sortby("time")
+        time_coord = data["time"]
+        time_index = time_coord.to_index()
+    start = time_coord.values[0]
+    end = time_coord.values[-1]
+    if np.issubdtype(time_coord.dtype, np.datetime64):
+        full_time = pd.date_range(start=start, end=end, freq="D")
+    else:
+        calendar = (
+            time_coord.encoding.get("calendar")
+            or time_coord.attrs.get("calendar")
+            or "standard"
+        )
+        full_time = xr.cftime_range(start=start, end=end, freq="D", calendar=calendar)
+    if len(full_time) != time_coord.size:
+        log.warning(
+            "Reindexing time to daily range (%d steps); filling %d missing dates with NaN.",
+            len(full_time),
+            len(full_time) - time_coord.size,
+        )
+    return data.reindex(time=full_time)
+
+
+def _open_dataset_with_retry(
+    url_or_path: str,
+    *,
+    retries: int = RETRY_MAX_ATTEMPTS,
+    base_delay_s: float = RETRY_BASE_DELAY_S,
+    backoff_factor: float = RETRY_BACKOFF_FACTOR,
+) -> xr.Dataset:
+    """
+    Open a dataset with connection throttling and exponential backoff retry.
+
+    Uses a module-level semaphore to limit concurrent THREDDS connections,
+    preventing server overload when running multiple parallel processes.
+    """
+    last_exc = None
+    delay = base_delay_s
+
+    # Acquire semaphore to limit concurrent connections
+    with _THREDDS_CONNECTION_SEMAPHORE:
         for attempt in range(1, retries + 1):
             try:
                 ds = xr.open_dataset(url_or_path)
@@ -270,140 +522,16 @@ def _download_data(
                 last_exc = exc
                 if attempt == retries:
                     break
-                log.warning(
-                    f"open_dataset failed (attempt {attempt}/{retries}) for {url_or_path}: {exc}. "
-                    f"Retrying in {delay_s:.1f}s."
+                logger.warning(
+                    "open_dataset failed (attempt %d/%d) for %s: %s. Retrying in %.1fs.",
+                    attempt,
+                    retries,
+                    url_or_path,
+                    exc,
+                    delay,
                 )
-                time.sleep(delay_s)
-        assert last_exc is not None
-        raise last_exc
+                time.sleep(delay)
+                delay *= backoff_factor  # Exponential backoff: 2s -> 4s -> 8s
 
-    if obs:
-        var = VARIABLES_MAP[variable]
-        log.info(f"Establishing connection to ERA5 data for {variable}({var})")
-        if remote:
-            ds_var = _open_dataset_with_retry(ERA5_DATA_REMOTE_URL)[var]
-        else:
-            ds_var = _open_dataset_with_retry(ERA5_DATA_LOCAL_PATH)[var]
-        log.info(f"Connection to ERA5 data for {variable}({var}) has been established")
-
-        # Coordinate normalization and renaming for 'hurs'
-        if var == "hurs":
-            ds_var = ds_var.rename({"lat": "latitude", "lon": "longitude"})
-            # Normalize latitude order to match other ERA5 variables (descending)
-            ds_var = ds_var.sortby("latitude", ascending=False)
-            ds_cropped = ds_var.sel(
-                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-            )
-        else:
-            ds_var.coords["longitude"] = (ds_var.coords["longitude"] + 180) % 360 - 180
-            ds_var = ds_var.sortby(ds_var.longitude)
-            ds_cropped = ds_var.sel(
-                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-            )
-
-        # Unit conversion
-        if var in ["t2mx", "t2mn", "t2m"]:
-            ds_cropped -= 273.15  # Convert from Kelvin to Celsius
-            ds_cropped.attrs["units"] = "°C"
-        elif var == "tp":
-            ds_cropped *= 1000  # Convert precipitation
-            ds_cropped.attrs["units"] = "mm"
-        elif var == "ssrd":
-            ds_cropped /= 86400  # Convert from J/m^2 to W/m^2
-            ds_cropped.attrs["units"] = "W m-2"
-        elif var == "sfcwind":
-            ds_cropped = ds_cropped * (
-                4.87 / np.log((67.8 * 10) - 5.42)
-            )  # Convert wind speed from 10 m to 2 m
-            ds_cropped.attrs["units"] = "m s-1"
-
-        # Select years
-        years = [x for x in years_obs]
-        time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
-            ds_cropped["time"].dt.year <= years[-1]
-        )
-
-    else:
-        log.info(f"Establishing connection to CORDEX data for {variable}")
-        ds = _open_dataset_with_retry(url)
-        if variable == "sfcWind":
-            dataset_var = "sfcwind" if "sfcwind" in ds.variables else "sfcWind"
-        else:
-            dataset_var = variable
-        ds_var = ds[dataset_var]
-
-        # Check if time dimension has a prefix, indicating variable is not available
-        time_dims = [dim for dim in ds_var.dims if dim.startswith("time_")]
-        if time_dims:
-            msg = f"Variable {variable} is not available for this model: {url}"
-            log.exception(msg)
-            raise ValueError(msg)
-
-        log.info(f"Connection to CORDEX data for {variable} has been established")
-        ds_cropped = ds_var.sel(
-            longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-            latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-        )
-
-        # Unit conversion
-        if variable in ["tas", "tasmax", "tasmin"]:
-            ds_cropped -= 273.15  # Convert from Kelvin to Celsius
-            ds_cropped.attrs["units"] = "°C"
-        elif variable == "pr":
-            ds_cropped *= 86400  # Convert from kg m^-2 s^-1 to mm/day
-            ds_cropped.attrs["units"] = "mm"
-        elif variable == "rsds":
-            ds_cropped.attrs["units"] = "W m-2"
-        elif variable == "sfcWind":
-            ds_cropped = ds_cropped * (
-                4.87 / np.log((67.8 * 10) - 5.42)
-            )  # Convert wind speed from 10 m to 2 m
-            ds_cropped.attrs["units"] = "m s-1"
-
-        # Select years based on rcp
-        if "rcp" in url:
-            years = [x for x in range(2006, years_up_to + 1)]
-        else:
-            years = [x for x in DEFAULT_YEARS_OBS]
-
-        # Add missing dates
-        try:
-            ds_cropped = ds_cropped.convert_calendar(
-                calendar="gregorian", missing=np.nan, align_on="date"
-            )
-        except ValueError as exc:
-            msg = str(exc)
-            if "date_range_like" in msg and "frequency was not inferable" in msg:
-                log.warning(
-                    "Time frequency not inferable; filling missing dates before calendar conversion."
-                )
-                ds_cropped = _reindex_daily(ds_cropped)
-                ds_cropped = ds_cropped.convert_calendar(
-                    calendar="gregorian", missing=np.nan, align_on="date"
-                )
-                ds_cropped = _reindex_daily(ds_cropped)
-            else:
-                raise
-
-        time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
-            ds_cropped["time"].dt.year <= years[-1]
-        )
-
-    # subset years
-    ds_cropped = ds_cropped.sel(time=time_mask)
-
-    assert isinstance(ds_cropped, xr.DataArray)
-
-    if obs:
-        log.info(
-            f"ERA5 data for {variable} has been processed: unit conversion ({ds_cropped.attrs.get('units', 'unknown units')}), time selection ({years[0]}-{years[-1]})"
-        )
-    else:
-        log.info(
-            f"CORDEX data for {variable} has been processed: unit conversion ({ds_cropped.attrs.get('units', 'unknown units')}), calendar transformation (360-day to Gregorian), time selection ({years[0]}-{years[-1]})"
-        )
-
-    return ds_cropped
+    assert last_exc is not None
+    raise last_exc
