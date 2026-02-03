@@ -15,7 +15,7 @@
 --------------------------------------------------------------------------------------------------
 ⚠️ **Check GitHub issues for known servers' downtimes**
 
-🎉 **NEW: We have released bias-corrected CORDEX-CORE simulations with the ISIMIP methodology for the AFR-22 and WAS-22 domains!** 🌍 This allows non-expert users to directly use these datasets and avoid the need for custom bias-correction. 📊 Additional domains will be released throughout 2025 and 2026.
+🎉 **NEW: We have released bias-corrected CORDEX-CORE simulations with the ISIMIP methodology for AFR-22, WAS-22, SAM-22, SEA-22 domains!** 🌍 This allows non-expert users to directly use these datasets and avoid the need for custom bias-correction. 📊 Additional domains will be released throughout 2025 and 2026.
 
 --------------------------------------------------------------------------------------------------
 
@@ -303,5 +303,6 @@ fig_precip = cavapy.plot_time_series(
   <img src="figures/time_series_precipitation.png" alt="Precipitation Trends" width="600">
   <br><em>Example time series plot showing precipitation trends in Togo (1990-2011) with trend line</em>
 </div>
+
 
 
