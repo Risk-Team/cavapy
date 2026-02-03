@@ -1,9 +1,11 @@
 """Public API for retrieving and visualizing CAVA climate data."""
 
+import logging
 import multiprocessing as mp
 import xarray as xr
+from tqdm import tqdm
 
-from cava_config import (
+from .cava_config import (
     DEFAULT_YEARS_OBS,
     VALID_DATASETS,
     VALID_DOMAINS,
@@ -13,9 +15,9 @@ from cava_config import (
     VALID_VARIABLES,
     logger,
 )
-from cava_download import process_worker
-from cava_plot import plot_spatial_map, plot_time_series
-from cava_validation import (
+from .cava_download import process_worker
+from .cava_plot import plot_spatial_map, plot_time_series
+from .cava_validation import (
     _geo_localize,
     _get_country_bounds,
     _validate_gcm_rcm_combinations,
@@ -246,6 +248,16 @@ def _run_combo_variable_task(
     return rcp_val, gcm_val, rcm_val, variable, data
 
 
+def _combo_task_wrapper(args):
+    """Wrapper for imap_unordered which requires single-argument callable."""
+    return _run_combo_variable_task(*args)
+
+
+def _init_pool_worker():
+    """Suppress logging in worker processes to show only progress bar."""
+    logging.getLogger("climate").setLevel(logging.CRITICAL)
+
+
 def get_climate_data(
     *,
     country: str | None,
@@ -266,7 +278,7 @@ def get_climate_data(
     num_processes: int = len(VALID_VARIABLES),
     max_threads_per_process: int = 3,
     dataset: str = "CORDEX-CORE",
-    max_total_processes: int = 12,
+    max_total_processes: int = 6,
 ) -> dict:
     """
     Retrieve CORDEX-CORE projections and/or ERA5 observations for a region.
@@ -308,7 +320,7 @@ def get_climate_data(
     max_threads_per_process (int): Max number of threads within each process. (default: 3).
     dataset (str): Dataset source to use. Options are "CORDEX-CORE" (original data) or "CORDEX-CORE-BC" (ISIMIP bias-corrected data). (default: "CORDEX-CORE").
     max_total_processes (int): Max number of processes when multiple models/RCPs are requested.
-        Defaults to 12 (cap applies to total combo-variable tasks).
+        Defaults to 6 (cap applies to total combo-variable tasks).
 
     Returns:
     dict: If a single (gcm, rcm, rcp) is requested, returns {variable: DataArray}.
@@ -434,6 +446,8 @@ def get_climate_data(
     max_workers = max_total_processes
     max_workers = max(1, min(max_workers, len(valid_combos) * len(variables_list)))
 
+    retry_log_level = logging.DEBUG if len(valid_combos) > 1 else logging.WARNING
+
     common_kwargs = {
         "years_obs": years_obs,
         "obs": obs,
@@ -443,6 +457,7 @@ def get_climate_data(
         "historical": historical,
         "remote": remote,
         "dataset": dataset,
+        "retry_log_level": retry_log_level,
     }
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
@@ -467,14 +482,17 @@ def get_climate_data(
         for variable in variables_list
     ]
 
-    with mp.Pool(processes=max_workers) as pool:
+    with mp.Pool(processes=max_workers, initializer=_init_pool_worker) as pool:
         try:
-            for rcp_val, gcm_val, rcm_val, variable, data in pool.starmap(
-                _run_combo_variable_task, tasks
-            ):
-                results.setdefault(rcp_val, {}).setdefault(f"{gcm_val}-{rcm_val}", {})[
-                    variable
-                ] = data
+            with tqdm(total=len(tasks), desc="Processing climate data", unit="task") as pbar:
+                for rcp_val, gcm_val, rcm_val, variable, data in pool.imap_unordered(
+                    _combo_task_wrapper, tasks
+                ):
+                    results.setdefault(rcp_val, {}).setdefault(f"{gcm_val}-{rcm_val}", {})[
+                        variable
+                    ] = data
+                    pbar.set_postfix({"last": f"{gcm_val}-{rcm_val}/{variable}"})
+                    pbar.update(1)
         except Exception as exc:
             pool.terminate()
             pool.join()
@@ -500,7 +518,8 @@ if __name__ == "__main__":
         years_up_to=years_up_to,
         historical=True,
         bias_correction=False,
-        dataset="CORDEX-CORE",
+        dataset="CORDEX-CORE-BC",
+        max_total_processes=6,
     )
     # Show a compact summary of the structure returned
     for rcp_val, model_map in multi.items():

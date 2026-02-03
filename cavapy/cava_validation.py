@@ -6,7 +6,7 @@ import pandas as pd
 import cartopy.feature as cfeature
 import cartopy.io.shapereader as shpreader
 
-from cava_config import (
+from .cava_config import (
     ERA5_DATA_REMOTE_URL,
     INVENTORY_DATA_LOCAL_PATH,
     INVENTORY_DATA_REMOTE_URL,
