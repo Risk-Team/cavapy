@@ -25,6 +25,7 @@ bottleneck = "*"
 llvmlite = "*"
 cartopy = "*"
 seaborn = "*"
+tqdm = "*"
 
 
 [build-system]

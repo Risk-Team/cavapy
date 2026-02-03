@@ -1,7 +1,9 @@
 """Public API for retrieving and visualizing CAVA climate data."""
 
+import logging
 import multiprocessing as mp
 import xarray as xr
+from tqdm import tqdm
 
 from cava_config import (
     DEFAULT_YEARS_OBS,
@@ -246,6 +248,16 @@ def _run_combo_variable_task(
     return rcp_val, gcm_val, rcm_val, variable, data
 
 
+def _combo_task_wrapper(args):
+    """Wrapper for imap_unordered which requires single-argument callable."""
+    return _run_combo_variable_task(*args)
+
+
+def _init_pool_worker():
+    """Suppress logging in worker processes to show only progress bar."""
+    logging.getLogger("climate").setLevel(logging.CRITICAL)
+
+
 def get_climate_data(
     *,
     country: str | None,
@@ -467,14 +479,17 @@ def get_climate_data(
         for variable in variables_list
     ]
 
-    with mp.Pool(processes=max_workers) as pool:
+    with mp.Pool(processes=max_workers, initializer=_init_pool_worker) as pool:
         try:
-            for rcp_val, gcm_val, rcm_val, variable, data in pool.starmap(
-                _run_combo_variable_task, tasks
-            ):
-                results.setdefault(rcp_val, {}).setdefault(f"{gcm_val}-{rcm_val}", {})[
-                    variable
-                ] = data
+            with tqdm(total=len(tasks), desc="Processing climate data", unit="task") as pbar:
+                for rcp_val, gcm_val, rcm_val, variable, data in pool.imap_unordered(
+                    _combo_task_wrapper, tasks
+                ):
+                    results.setdefault(rcp_val, {}).setdefault(f"{gcm_val}-{rcm_val}", {})[
+                        variable
+                    ] = data
+                    pbar.set_postfix({"last": f"{gcm_val}-{rcm_val}/{variable}"})
+                    pbar.update(1)
         except Exception as exc:
             pool.terminate()
             pool.join()

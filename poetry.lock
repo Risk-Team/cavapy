@@ -2383,6 +2383,28 @@ files = [
 ]
 
 [[package]]
+name = "tqdm"
+version = "4.67.2"
+description = "Fast, Extensible Progress Meter"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "tqdm-4.67.2-py3-none-any.whl", hash = "sha256:9a12abcbbff58b6036b2167d9d3853042b9d436fe7330f06ae047867f2f8e0a7"},
+    {file = "tqdm-4.67.2.tar.gz", hash = "sha256:649aac53964b2cb8dec76a14b405a4c0d13612cb8933aae547dd144eacc99653"},
+]
+
+[package.dependencies]
+colorama = {version = "*", markers = "platform_system == \"Windows\""}
+
+[package.extras]
+dev = ["nbval", "pytest (>=6)", "pytest-asyncio (>=0.24)", "pytest-cov", "pytest-timeout"]
+discord = ["requests"]
+notebook = ["ipywidgets (>=6)"]
+slack = ["slack-sdk"]
+telegram = ["requests"]
+
+[[package]]
 name = "typer"
 version = "0.17.4"
 description = "Typer, build great CLIs. Easy to code. Based on Python type hints."
@@ -2623,4 +2645,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "182bb88b0dcd09f72781bc5e194ccde5158a6f50b8d3f45e0c668cbd37a68cf7"
+content-hash = "8b54b78d53ff69e98efedd57a4314c7619f04b86ed1ae3a8491eaeab285cf1e5"
