@@ -102,6 +102,9 @@ def _climate_data_for_variable(
             years_up_to=years_up_to,
             years_obs=years_obs,
             remote=remote,
+            gcm=gcm,
+            rcm=rcm,
+            rcp=rcp,
         )
 
     if not obs:
@@ -113,6 +116,9 @@ def _climate_data_for_variable(
             years_obs=years_obs,
             years_up_to=years_up_to,
             remote=remote,
+            gcm=gcm,
+            rcm=rcm,
+            rcp=rcp,
         )
         downloaded_models = list(
             executor.map(download_fn, filtered_data[column_to_use])
@@ -199,7 +205,12 @@ def _thread_download_data(url: str | None, **kwargs):
         if kwargs["obs"]
         else ("historical" if url and "historical" in url else "projections")
     )
-    log = logger.getChild(f"{variable}-{temporal}")
+    if kwargs["obs"]:
+        context_label = f"ERA5-{variable}"
+    else:
+        run_label = "historical" if temporal == "historical" else kwargs["rcp"]
+        context_label = f"{kwargs['gcm']}-{kwargs['rcm']}-{variable}-{run_label}"
+    log = logger.getChild(context_label)
     try:
         return _download_data(url=url, **kwargs)
     except Exception as e:
@@ -215,6 +226,9 @@ def _download_data(
     years_obs: range,
     years_up_to: int,
     remote: bool,
+    gcm: str,
+    rcm: str,
+    rcp: str,
 ) -> xr.DataArray:
     """Download a dataset, subset it to the bbox, and perform unit/calendar handling."""
     temporal = (
@@ -222,7 +236,12 @@ def _download_data(
         if obs
         else ("historical" if url and "historical" in url else "projections")
     )
-    log = logger.getChild(f"{variable}-{temporal}")
+    if obs:
+        context_label = f"ERA5-{variable}"
+    else:
+        run_label = "historical" if temporal == "historical" else rcp
+        context_label = f"{gcm}-{rcm}-{variable}-{run_label}"
+    log = logger.getChild(context_label)
 
     def _reindex_daily(data: xr.DataArray) -> xr.DataArray:
         """Reindex data to a daily time axis, filling missing dates with NaN."""
@@ -278,124 +297,146 @@ def _download_data(
         assert last_exc is not None
         raise last_exc
 
-    if obs:
-        var = VARIABLES_MAP[variable]
-        log.info(f"Establishing connection to ERA5 data for {variable}({var})")
-        if remote:
-            ds_var = _open_dataset_with_retry(ERA5_DATA_REMOTE_URL)[var]
-        else:
-            ds_var = _open_dataset_with_retry(ERA5_DATA_LOCAL_PATH)[var]
-        log.info(f"Connection to ERA5 data for {variable}({var}) has been established")
+    def _process_once() -> tuple[xr.DataArray, list[int]]:
+        if obs:
+            var = VARIABLES_MAP[variable]
+            if remote:
+                ds_var = _open_dataset_with_retry(ERA5_DATA_REMOTE_URL)[var]
+            else:
+                ds_var = _open_dataset_with_retry(ERA5_DATA_LOCAL_PATH)[var]
+            log.info("Connection established")
 
-        # Coordinate normalization and renaming for 'hurs'
-        if var == "hurs":
-            ds_var = ds_var.rename({"lat": "latitude", "lon": "longitude"})
-            # Normalize latitude order to match other ERA5 variables (descending)
-            ds_var = ds_var.sortby("latitude", ascending=False)
-            ds_cropped = ds_var.sel(
-                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-            )
-        else:
-            ds_var.coords["longitude"] = (ds_var.coords["longitude"] + 180) % 360 - 180
-            ds_var = ds_var.sortby(ds_var.longitude)
-            ds_cropped = ds_var.sel(
-                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-            )
-
-        # Unit conversion
-        if var in ["t2mx", "t2mn", "t2m"]:
-            ds_cropped -= 273.15  # Convert from Kelvin to Celsius
-            ds_cropped.attrs["units"] = "°C"
-        elif var == "tp":
-            ds_cropped *= 1000  # Convert precipitation
-            ds_cropped.attrs["units"] = "mm"
-        elif var == "ssrd":
-            ds_cropped /= 86400  # Convert from J/m^2 to W/m^2
-            ds_cropped.attrs["units"] = "W m-2"
-        elif var == "sfcwind":
-            ds_cropped = ds_cropped * (
-                4.87 / np.log((67.8 * 10) - 5.42)
-            )  # Convert wind speed from 10 m to 2 m
-            ds_cropped.attrs["units"] = "m s-1"
-
-        # Select years
-        years = [x for x in years_obs]
-        time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
-            ds_cropped["time"].dt.year <= years[-1]
-        )
-
-    else:
-        log.info(f"Establishing connection to CORDEX data for {variable}")
-        ds = _open_dataset_with_retry(url)
-        if variable == "sfcWind":
-            dataset_var = "sfcwind" if "sfcwind" in ds.variables else "sfcWind"
-        else:
-            dataset_var = variable
-        ds_var = ds[dataset_var]
-
-        # Check if time dimension has a prefix, indicating variable is not available
-        time_dims = [dim for dim in ds_var.dims if dim.startswith("time_")]
-        if time_dims:
-            msg = f"Variable {variable} is not available for this model: {url}"
-            log.exception(msg)
-            raise ValueError(msg)
-
-        log.info(f"Connection to CORDEX data for {variable} has been established")
-        ds_cropped = ds_var.sel(
-            longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-            latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-        )
-
-        # Unit conversion
-        if variable in ["tas", "tasmax", "tasmin"]:
-            ds_cropped -= 273.15  # Convert from Kelvin to Celsius
-            ds_cropped.attrs["units"] = "°C"
-        elif variable == "pr":
-            ds_cropped *= 86400  # Convert from kg m^-2 s^-1 to mm/day
-            ds_cropped.attrs["units"] = "mm"
-        elif variable == "rsds":
-            ds_cropped.attrs["units"] = "W m-2"
-        elif variable == "sfcWind":
-            ds_cropped = ds_cropped * (
-                4.87 / np.log((67.8 * 10) - 5.42)
-            )  # Convert wind speed from 10 m to 2 m
-            ds_cropped.attrs["units"] = "m s-1"
-
-        # Select years based on rcp
-        if "rcp" in url:
-            years = [x for x in range(2006, years_up_to + 1)]
-        else:
-            years = [x for x in DEFAULT_YEARS_OBS]
-
-        # Add missing dates
-        try:
-            ds_cropped = ds_cropped.convert_calendar(
-                calendar="gregorian", missing=np.nan, align_on="date"
-            )
-        except ValueError as exc:
-            msg = str(exc)
-            if "date_range_like" in msg and "frequency was not inferable" in msg:
-                log.warning(
-                    "Time frequency not inferable; filling missing dates before calendar conversion."
+            # Coordinate normalization and renaming for 'hurs'
+            if var == "hurs":
+                ds_var = ds_var.rename({"lat": "latitude", "lon": "longitude"})
+                # Normalize latitude order to match other ERA5 variables (descending)
+                ds_var = ds_var.sortby("latitude", ascending=False)
+                ds_cropped = ds_var.sel(
+                    longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+                    latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
                 )
-                ds_cropped = _reindex_daily(ds_cropped)
+            else:
+                ds_var.coords["longitude"] = (ds_var.coords["longitude"] + 180) % 360 - 180
+                ds_var = ds_var.sortby(ds_var.longitude)
+                ds_cropped = ds_var.sel(
+                    longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+                    latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
+                )
+
+            # Unit conversion
+            if var in ["t2mx", "t2mn", "t2m"]:
+                ds_cropped -= 273.15  # Convert from Kelvin to Celsius
+                ds_cropped.attrs["units"] = "°C"
+            elif var == "tp":
+                ds_cropped *= 1000  # Convert precipitation
+                ds_cropped.attrs["units"] = "mm"
+            elif var == "ssrd":
+                ds_cropped /= 86400  # Convert from J/m^2 to W/m^2
+                ds_cropped.attrs["units"] = "W m-2"
+            elif var == "sfcwind":
+                ds_cropped = ds_cropped * (
+                    4.87 / np.log((67.8 * 10) - 5.42)
+                )  # Convert wind speed from 10 m to 2 m
+                ds_cropped.attrs["units"] = "m s-1"
+
+            # Select years
+            years = [x for x in years_obs]
+            time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
+                ds_cropped["time"].dt.year <= years[-1]
+            )
+
+        else:
+            ds = _open_dataset_with_retry(url)
+            if variable == "sfcWind":
+                dataset_var = "sfcwind" if "sfcwind" in ds.variables else "sfcWind"
+            else:
+                dataset_var = variable
+            ds_var = ds[dataset_var]
+
+            # Check if time dimension has a prefix, indicating variable is not available
+            time_dims = [dim for dim in ds_var.dims if dim.startswith("time_")]
+            if time_dims:
+                msg = f"Variable {variable} is not available for this model: {url}"
+                log.exception(msg)
+                raise ValueError(msg)
+
+            log.info("Connection established")
+            ds_cropped = ds_var.sel(
+                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
+            )
+
+            # Unit conversion
+            if variable in ["tas", "tasmax", "tasmin"]:
+                ds_cropped -= 273.15  # Convert from Kelvin to Celsius
+                ds_cropped.attrs["units"] = "°C"
+            elif variable == "pr":
+                ds_cropped *= 86400  # Convert from kg m^-2 s^-1 to mm/day
+                ds_cropped.attrs["units"] = "mm"
+            elif variable == "rsds":
+                ds_cropped.attrs["units"] = "W m-2"
+            elif variable == "sfcWind":
+                ds_cropped = ds_cropped * (
+                    4.87 / np.log((67.8 * 10) - 5.42)
+                )  # Convert wind speed from 10 m to 2 m
+                ds_cropped.attrs["units"] = "m s-1"
+
+            # Select years based on rcp
+            if "rcp" in url:
+                years = [x for x in range(2006, years_up_to + 1)]
+            else:
+                years = [x for x in DEFAULT_YEARS_OBS]
+
+            # Add missing dates
+            try:
                 ds_cropped = ds_cropped.convert_calendar(
                     calendar="gregorian", missing=np.nan, align_on="date"
                 )
-                ds_cropped = _reindex_daily(ds_cropped)
-            else:
+            except ValueError as exc:
+                msg = str(exc)
+                if "date_range_like" in msg and "frequency was not inferable" in msg:
+                    log.warning(
+                        "Time frequency not inferable; filling missing dates before calendar conversion."
+                    )
+                    ds_cropped = _reindex_daily(ds_cropped)
+                    ds_cropped = ds_cropped.convert_calendar(
+                        calendar="gregorian", missing=np.nan, align_on="date"
+                    )
+                    ds_cropped = _reindex_daily(ds_cropped)
+                else:
+                    raise
+
+            time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
+                ds_cropped["time"].dt.year <= years[-1]
+            )
+
+        # subset years
+        ds_cropped = ds_cropped.sel(time=time_mask)
+        if ds_cropped["time"].size == 0:
+            raise ValueError("Empty time axis after subsetting")
+
+        assert isinstance(ds_cropped, xr.DataArray)
+        return ds_cropped, years
+
+    retries = 3
+    delay_s = 2.0
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            ds_cropped, years = _process_once()
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt == retries:
                 raise
-
-        time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
-            ds_cropped["time"].dt.year <= years[-1]
-        )
-
-    # subset years
-    ds_cropped = ds_cropped.sel(time=time_mask)
-
-    assert isinstance(ds_cropped, xr.DataArray)
+            log.warning(
+                f"Processing failed (attempt {attempt}/{retries}) for {variable}: {exc}. "
+                f"Retrying in {delay_s:.1f}s."
+            )
+            time.sleep(delay_s)
+    else:
+        assert last_exc is not None
+        raise last_exc
 
     if obs:
         log.info(

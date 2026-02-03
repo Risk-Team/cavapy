@@ -63,6 +63,7 @@ def _validate_urls(
     historical: bool = False,
     bias_correction: bool = False,
     dataset: str = "CORDEX-CORE",
+    variables: list[str] | None = None,
 ):
     """Validate inventory availability and log resolved dataset URLs."""
     # Load the data
@@ -111,15 +112,20 @@ def _validate_urls(
         # Extract the column values as a list
         for _, row in filtered_data.iterrows():
             if row["experiment"] == "historical":
-                log_hist = logger.getChild("URL-validation-historical")
+                log_hist = logger.getChild(f"URL-validation-{gcm}-{rcm}-historical")
                 log_hist.info(f"{row[column_to_use]}")
             else:
-                log_proj = logger.getChild("URL-validation-projections")
+                log_proj = logger.getChild(f"URL-validation-{gcm}-{rcm}-{rcp}")
                 log_proj.info(f"{row[column_to_use]}")
 
     else:  # when obs is True
-        log_obs = logger.getChild("URL-validation-observations")
-        log_obs.info(f"{ERA5_DATA_REMOTE_URL}")
+        if variables:
+            for variable in variables:
+                log_obs = logger.getChild(f"URL-validation-ERA5-{variable}")
+                log_obs.info(f"{ERA5_DATA_REMOTE_URL}")
+        else:
+            log_obs = logger.getChild("URL-validation-ERA5")
+            log_obs.info(f"{ERA5_DATA_REMOTE_URL}")
 
 
 def _get_country_bounds(country_name: str) -> tuple[float, float, float, float]:

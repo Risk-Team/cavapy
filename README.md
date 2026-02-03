@@ -72,9 +72,11 @@ The get_climate_data function performs automatically:
 - Bias correction using the empirical quantile mapping (optional)
 
 ### Parallelization strategy
-- If you request a single model/rcp combination, cavapy parallelizes **across variables**.
-- If you request multiple models and/or RCPs, cavapy parallelizes **across model/RCP combinations** and processes variables sequentially per combination.
-- By default, up to **6 model/RCP processes** are used (capped by the number of combinations).
+- If you request a single model/RCP combination, cavapy parallelizes **across variables** (one process per variable).
+- If you request multiple models and/or RCPs, cavapy parallelizes **across combo-variable tasks** (one process per variable per model), capped globally.
+- If `num_processes <= 1` or only one variable is requested, variables run sequentially (even for a single combo).
+- By default, up to **12 total processes** are used (capped by number of combo-variable tasks).
+- Inside each process, a thread pool handles per-variable downloads and observation/model fetches concurrently.
 
 ## Example usage
 

@@ -16,7 +16,8 @@ logger = logging.getLogger("climate")
 logger.handlers = []  # Remove any existing handlers
 handler = logging.StreamHandler()
 formatter = logging.Formatter(
-    "%(asctime)s | %(name)s | %(process)d:%(thread)d [%(levelname)s]: %(message)s"
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
 )
 handler.setFormatter(formatter)
 for hdlr in logger.handlers[:]:  # remove all old handlers

@@ -123,7 +123,18 @@ def _get_climate_data_single(
     if not obs:
         _validate_gcm_rcm_combinations(cordex_domain, gcm, rcm)
 
-    _validate_urls(gcm, rcm, rcp, remote, cordex_domain, obs, historical, bias_correction, dataset)
+    _validate_urls(
+        gcm,
+        rcm,
+        rcp,
+        remote,
+        cordex_domain,
+        obs,
+        historical,
+        bias_correction,
+        dataset,
+        variables,
+    )
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
 
@@ -214,22 +225,25 @@ def _normalize_selection(
     return values, False
 
 
-def _run_combo_task(
+def _run_combo_variable_task(
     rcp_val: str,
     gcm_val: str,
     rcm_val: str,
+    variable: str,
     common_kwargs: dict,
     max_threads_per_process: int,
+    bbox: dict,
 ):
-    data = _get_climate_data_single(
+    data = process_worker(
+        max_threads_per_process,
+        variable=variable,
+        bbox=bbox,
         rcp=rcp_val,
         gcm=gcm_val,
         rcm=rcm_val,
-        num_processes=1,
-        max_threads_per_process=max_threads_per_process,
         **common_kwargs,
     )
-    return rcp_val, gcm_val, rcm_val, data
+    return rcp_val, gcm_val, rcm_val, variable, data
 
 
 def get_climate_data(
@@ -252,13 +266,15 @@ def get_climate_data(
     num_processes: int = len(VALID_VARIABLES),
     max_threads_per_process: int = 3,
     dataset: str = "CORDEX-CORE",
-    max_model_processes: int = 6,
+    max_total_processes: int = 12,
 ) -> dict:
     """
     Retrieve CORDEX-CORE projections and/or ERA5 observations for a region.
 
     The function orchestrates validation, spatial subsetting, unit conversion,
     optional bias correction, and parallel download/processing.
+    Parallelization uses processes across variables or model/variable combinations,
+    with a thread pool inside each process for per-variable downloads.
 
     Args:
     country (str): Name of the country for which data is to be processed.
@@ -286,12 +302,13 @@ def get_climate_data(
     ylim (tuple or None): Latitudinal bounds of the region of interest. Use only when country is None (default: None).
     remote (bool): Flag to work with remote data or not (default: True).
     variables (list[str] or None): List of variables to process. Must be a subset of {VALID_VARIABLES}. If None, all variables are processed. (default: None).
-    num_processes (int): Number of processes to use, one per variable.
+    num_processes (int): Number of processes to use, one per variable for a single combo.
+        If num_processes <= 1 or only one variable is requested, variables run sequentially.
         By default equals to the number of all possible variables. (default: {len(VALID_VARIABLES)}).
     max_threads_per_process (int): Max number of threads within each process. (default: 3).
     dataset (str): Dataset source to use. Options are "CORDEX-CORE" (original data) or "CORDEX-CORE-BC" (ISIMIP bias-corrected data). (default: "CORDEX-CORE").
-    max_model_processes (int): Max number of processes for model/RCP combinations when multiple are requested.
-        Defaults to 6.
+    max_total_processes (int): Max number of processes when multiple models/RCPs are requested.
+        Defaults to 12 (cap applies to total combo-variable tasks).
 
     Returns:
     dict: If a single (gcm, rcm, rcp) is requested, returns {variable: DataArray}.
@@ -325,6 +342,33 @@ def get_climate_data(
 
     if cordex_domain is None:
         raise ValueError("cordex_domain is required when obs is False")
+
+    if xlim is None and ylim is not None or xlim is not None and ylim is None:
+        raise ValueError(
+            "xlim and ylim mismatch: they must be both specified or both unspecified"
+        )
+    if country is None and xlim is None:
+        raise ValueError("You must specify a country or (xlim, ylim)")
+    if country is not None and xlim is not None:
+        raise ValueError("You must specify either country or (xlim, ylim), not both")
+
+    if dataset not in VALID_DATASETS:
+        raise ValueError(
+            f"Invalid dataset='{dataset}'. Must be one of {VALID_DATASETS}"
+        )
+    if dataset == "CORDEX-CORE-BC" and bias_correction:
+        raise ValueError(
+            "Cannot apply bias_correction=True when using dataset='CORDEX-CORE-BC'. "
+            "The CORDEX-CORE-BC dataset is already bias-corrected using ISIMIP methodology."
+        )
+
+    if years_up_to is None:
+        raise ValueError("years_up_to is required when obs is False")
+    if years_up_to <= 2006:
+        raise ValueError("years_up_to must be greater than 2006")
+
+    if years_obs is None:
+        years_obs = DEFAULT_YEARS_OBS
 
     rcps, _all_rcps = _normalize_selection(rcp, VALID_RCPS, "rcp")
     gcms, all_gcms = _normalize_selection(gcm, VALID_GCM, "gcm")
@@ -375,37 +419,62 @@ def get_climate_data(
             ", ".join(f"{g}-{m} ({r})" for r, g, m in invalid_combos),
         )
 
+    if variables is not None:
+        invalid_vars = [var for var in variables if var not in VALID_VARIABLES]
+        if invalid_vars:
+            raise ValueError(
+                f"Invalid variables: {invalid_vars}. Must be a subset of {VALID_VARIABLES}"
+            )
+        variables_list = list(variables)
+    else:
+        variables_list = list(VALID_VARIABLES)
+
     results: dict[str, dict[str, dict[str, xr.DataArray]]] = {}
-    max_workers = max_model_processes
-    max_workers = max(1, min(max_workers, len(valid_combos)))
+
+    max_workers = max_total_processes
+    max_workers = max(1, min(max_workers, len(valid_combos) * len(variables_list)))
 
     common_kwargs = {
-        "country": country,
         "years_obs": years_obs,
         "obs": obs,
         "cordex_domain": cordex_domain,
         "years_up_to": years_up_to,
         "bias_correction": bias_correction,
         "historical": historical,
-        "buffer": buffer,
-        "xlim": xlim,
-        "ylim": ylim,
         "remote": remote,
-        "variables": variables,
         "dataset": dataset,
     }
 
+    bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
+
+    for rcp_val, gcm_val, rcm_val in valid_combos:
+        _validate_urls(
+            gcm_val,
+            rcm_val,
+            rcp_val,
+            remote,
+            cordex_domain,
+            obs,
+            historical,
+            bias_correction,
+            dataset,
+            variables_list,
+        )
+
     tasks = [
-        (rcp_val, gcm_val, rcm_val, common_kwargs, max_threads_per_process)
+        (rcp_val, gcm_val, rcm_val, variable, common_kwargs, max_threads_per_process, bbox)
         for rcp_val, gcm_val, rcm_val in valid_combos
+        for variable in variables_list
     ]
 
     with mp.Pool(processes=max_workers) as pool:
         try:
-            for rcp_val, gcm_val, rcm_val, data in pool.starmap(
-                _run_combo_task, tasks
+            for rcp_val, gcm_val, rcm_val, variable, data in pool.starmap(
+                _run_combo_variable_task, tasks
             ):
-                results.setdefault(rcp_val, {})[f"{gcm_val}-{rcm_val}"] = data
+                results.setdefault(rcp_val, {}).setdefault(f"{gcm_val}-{rcm_val}", {})[
+                    variable
+                ] = data
         except Exception as exc:
             pool.terminate()
             pool.join()
@@ -417,40 +486,38 @@ def get_climate_data(
 
 
 if __name__ == "__main__":
-    # Example: Retrieve Togo data for all variables and all model combinations.
-    # This loops over all GCM/RCM combinations and both RCPs.
+    # Examples: show how get_climate_data parallelizes.
     cordex_domain = "AFR-22"
     years_up_to = 2015
-    all_models = [(gcm, rcm) for gcm in VALID_GCM for rcm in VALID_RCM]
 
-    def _fetch_one(dataset_name: str, rcp: str, gcm: str, rcm: str) -> tuple[str, list[str]]:
-        data = get_climate_data(
-            country="Togo",
-            cordex_domain=cordex_domain,
-            rcp=rcp,
-            gcm=gcm,
-            rcm=rcm,
-            years_up_to=years_up_to,
-            historical=True,
-            bias_correction=False,
-            dataset=dataset_name,
-        )
-        return f"{dataset_name} | {rcp} | {gcm}-{rcm}", list(data.keys())
+    print("\nExample 1: multiple models (combo-variable tasks parallelized)...")
+    multi = get_climate_data(
+        country="Togo",
+        cordex_domain=cordex_domain,
+        rcp="rcp26",
+        gcm=VALID_GCM,
+        rcm=VALID_RCM,
+        years_up_to=years_up_to,
+        historical=True,
+        bias_correction=False,
+        dataset="CORDEX-CORE",
+    )
+    # Show a compact summary of the structure returned
+    for rcp_val, model_map in multi.items():
+        print(rcp_val, "models:", list(model_map.keys()))
 
+    print("\nExample 2: single model/RCP (variables parallelized)...")
+    single = get_climate_data(
+        country="Togo",
+        cordex_domain=cordex_domain,
+        rcp="rcp26",
+        gcm="MPI",
+        rcm="REMO",
+        years_up_to=years_up_to,
+        historical=True,
+        bias_correction=False,
+        dataset="CORDEX-CORE",
+    )
+    print("Single model variables:", list(single.keys()))
 
-    print("\nGetting CORDEX-CORE-BC data for all models (sequential across models)...")
-    rcp = "rcp26"
-    for gcm, rcm in all_models:
-        label, variables = _fetch_one("CORDEX-CORE-BC", rcp, gcm, rcm)
-        print(label)
-        print("Variables:", variables)
-
-    print("Getting CORDEX-CORE data for all models (sequential across models)...")
-    rcp = "rcp26"
-    for gcm, rcm in all_models:
-        label, variables = _fetch_one("CORDEX-CORE", rcp, gcm, rcm)
-        print(label)
-        print("Variables:", variables)
-
-
-    print("Example completed successfully!")
+    print("Examples completed successfully!")
