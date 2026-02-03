@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cavapy"
-version = "1.1.0"
+version = "1.1.5"
 description = "CAVA Python package. Retrive climate data."
 authors = ["Riccardo Soldan <riccardosoldan@hotmail.it>", "Oleh Lokshyn <olokshyn@gmail.com>"]
 readme = "README.md"
@@ -11,6 +11,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+include = ["cava_*.py"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
