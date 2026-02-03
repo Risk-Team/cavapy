@@ -13,8 +13,8 @@ import numpy as np
 import xarray as xr
 import xsdba as sdba
 
-from cava_bias import _leave_one_out_bias_correction
-from cava_config import (
+from .cava_bias import _leave_one_out_bias_correction
+from .cava_config import (
     DEFAULT_YEARS_OBS,
     ERA5_DATA_LOCAL_PATH,
     ERA5_DATA_REMOTE_URL,
@@ -23,7 +23,7 @@ from cava_config import (
     VARIABLES_MAP,
     logger,
 )
-from cava_validation import _ensure_inventory_not_empty
+from .cava_validation import _ensure_inventory_not_empty
 
 
 @contextmanager

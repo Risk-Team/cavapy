@@ -5,7 +5,7 @@ import multiprocessing as mp
 import xarray as xr
 from tqdm import tqdm
 
-from cava_config import (
+from .cava_config import (
     DEFAULT_YEARS_OBS,
     VALID_DATASETS,
     VALID_DOMAINS,
@@ -15,9 +15,9 @@ from cava_config import (
     VALID_VARIABLES,
     logger,
 )
-from cava_download import process_worker
-from cava_plot import plot_spatial_map, plot_time_series
-from cava_validation import (
+from .cava_download import process_worker
+from .cava_plot import plot_spatial_map, plot_time_series
+from .cava_validation import (
     _geo_localize,
     _get_country_bounds,
     _validate_gcm_rcm_combinations,
