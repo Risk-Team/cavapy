@@ -1,7 +1,11 @@
 """Download and post-process ERA5/CORDEX data for the CAVA pipeline."""
 
+import logging
+import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import partial
 
 import pandas as pd
@@ -20,6 +24,26 @@ from cava_config import (
     logger,
 )
 from cava_validation import _ensure_inventory_not_empty
+
+
+@contextmanager
+def _suppress_stderr_fd():
+    """Temporarily redirect stderr to /dev/null (also silences C-level warnings)."""
+    try:
+        stderr_fd = sys.stderr.fileno()
+    except Exception:
+        # Fall back to no-op if stderr is not a real file descriptor.
+        yield
+        return
+
+    saved_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+            yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(saved_fd)
 
 
 def process_worker(num_threads, **kwargs) -> xr.DataArray:
@@ -52,6 +76,7 @@ def _climate_data_for_variable(
     historical: bool,
     remote: bool,
     dataset: str = "CORDEX-CORE",
+    retry_log_level: int = logging.WARNING,
 ) -> xr.DataArray:
     """Fetch and process one variable, optionally bias-correcting and merging runs."""
     log = logger.getChild(variable)
@@ -105,6 +130,7 @@ def _climate_data_for_variable(
             gcm=gcm,
             rcm=rcm,
             rcp=rcp,
+            retry_log_level=retry_log_level,
         )
 
     if not obs:
@@ -119,6 +145,7 @@ def _climate_data_for_variable(
             gcm=gcm,
             rcm=rcm,
             rcp=rcp,
+            retry_log_level=retry_log_level,
         )
         downloaded_models = list(
             executor.map(download_fn, filtered_data[column_to_use])
@@ -229,6 +256,7 @@ def _download_data(
     gcm: str,
     rcm: str,
     rcp: str,
+    retry_log_level: int = logging.WARNING,
 ) -> xr.DataArray:
     """Download a dataset, subset it to the bbox, and perform unit/calendar handling."""
     temporal = (
@@ -281,7 +309,11 @@ def _download_data(
         last_exc = None
         for attempt in range(1, retries + 1):
             try:
-                ds = xr.open_dataset(url_or_path)
+                if attempt < retries:
+                    with _suppress_stderr_fd():
+                        ds = xr.open_dataset(url_or_path)
+                else:
+                    ds = xr.open_dataset(url_or_path)
                 if not ds.data_vars:
                     raise ValueError("Dataset opened with no data variables")
                 return ds
@@ -289,7 +321,8 @@ def _download_data(
                 last_exc = exc
                 if attempt == retries:
                     break
-                log.warning(
+                log.log(
+                    retry_log_level,
                     f"open_dataset failed (attempt {attempt}/{retries}) for {url_or_path}: {exc}. "
                     f"Retrying in {delay_s:.1f}s."
                 )
@@ -429,7 +462,8 @@ def _download_data(
             last_exc = exc
             if attempt == retries:
                 raise
-            log.warning(
+            log.log(
+                retry_log_level,
                 f"Processing failed (attempt {attempt}/{retries}) for {variable}: {exc}. "
                 f"Retrying in {delay_s:.1f}s."
             )

@@ -278,7 +278,7 @@ def get_climate_data(
     num_processes: int = len(VALID_VARIABLES),
     max_threads_per_process: int = 3,
     dataset: str = "CORDEX-CORE",
-    max_total_processes: int = 12,
+    max_total_processes: int = 6,
 ) -> dict:
     """
     Retrieve CORDEX-CORE projections and/or ERA5 observations for a region.
@@ -320,7 +320,7 @@ def get_climate_data(
     max_threads_per_process (int): Max number of threads within each process. (default: 3).
     dataset (str): Dataset source to use. Options are "CORDEX-CORE" (original data) or "CORDEX-CORE-BC" (ISIMIP bias-corrected data). (default: "CORDEX-CORE").
     max_total_processes (int): Max number of processes when multiple models/RCPs are requested.
-        Defaults to 12 (cap applies to total combo-variable tasks).
+        Defaults to 6 (cap applies to total combo-variable tasks).
 
     Returns:
     dict: If a single (gcm, rcm, rcp) is requested, returns {variable: DataArray}.
@@ -446,6 +446,8 @@ def get_climate_data(
     max_workers = max_total_processes
     max_workers = max(1, min(max_workers, len(valid_combos) * len(variables_list)))
 
+    retry_log_level = logging.DEBUG if len(valid_combos) > 1 else logging.WARNING
+
     common_kwargs = {
         "years_obs": years_obs,
         "obs": obs,
@@ -455,6 +457,7 @@ def get_climate_data(
         "historical": historical,
         "remote": remote,
         "dataset": dataset,
+        "retry_log_level": retry_log_level,
     }
 
     bbox = _geo_localize(country, xlim, ylim, buffer, cordex_domain, obs)
@@ -515,7 +518,8 @@ if __name__ == "__main__":
         years_up_to=years_up_to,
         historical=True,
         bias_correction=False,
-        dataset="CORDEX-CORE",
+        dataset="CORDEX-CORE-BC",
+        max_total_processes=6,
     )
     # Show a compact summary of the structure returned
     for rcp_val, model_map in multi.items():
