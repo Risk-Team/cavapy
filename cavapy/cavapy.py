@@ -1,7 +1,12 @@
 """Public API for retrieving and visualizing CAVA climate data."""
 
+import json
 import logging
 import multiprocessing as mp
+import os
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
 import xarray as xr
 from tqdm import tqdm
 
@@ -23,6 +28,76 @@ from .cava_validation import (
     _validate_gcm_rcm_combinations,
     _validate_urls,
 )
+
+_ANNOUNCEMENTS_ATTEMPTED = False
+_ANNOUNCEMENTS_ENV_DISABLE = "CAVAPY_NO_ANNOUNCEMENTS"
+_GITHUB_ISSUES_URL = "https://api.github.com/repos/Risk-Team/cavapy/issues"
+_ANNOUNCEMENTS_LABEL = "announcement"
+_ANNOUNCEMENTS_TIMEOUT_S = 2
+_ANNOUNCEMENTS_PER_PAGE = 20
+
+
+def _fetch_announcements() -> list[dict[str, str]]:
+    """Fetch open GitHub issues marked as announcements."""
+    query = urlencode(
+        {
+            "state": "open",
+            "labels": _ANNOUNCEMENTS_LABEL,
+            "sort": "created",
+            "direction": "desc",
+            "per_page": str(_ANNOUNCEMENTS_PER_PAGE),
+        }
+    )
+    request = Request(
+        f"{_GITHUB_ISSUES_URL}?{query}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "cavapy",
+        },
+    )
+    with urlopen(request, timeout=_ANNOUNCEMENTS_TIMEOUT_S) as response:
+        payload = json.load(response)
+
+    announcements: list[dict[str, str]] = []
+    for item in payload:
+        # The GitHub issues API includes PRs; skip those.
+        if "pull_request" in item:
+            continue
+        announcements.append(
+            {
+                "title": item.get("title", "").strip(),
+                "body": (item.get("body") or "").strip(),
+                "url": item.get("html_url", "").strip(),
+            }
+        )
+    return announcements
+
+
+def _show_startup_announcements() -> None:
+    """Print startup announcements once per Python process."""
+    global _ANNOUNCEMENTS_ATTEMPTED
+    if _ANNOUNCEMENTS_ATTEMPTED:
+        return
+    _ANNOUNCEMENTS_ATTEMPTED = True
+
+    if os.getenv(_ANNOUNCEMENTS_ENV_DISABLE, "").lower() in {"1", "true", "yes"}:
+        return
+
+    try:
+        announcements = _fetch_announcements()
+    except Exception as exc:
+        logger.debug("Unable to fetch GitHub announcements: %s", exc)
+        return
+
+    if not announcements:
+        return
+
+    print("\n[cavapy announcements]")
+    for announcement in announcements:
+        print(f"\n{announcement['title']}")
+        if announcement["body"]:
+            print(announcement["body"])
+        print("")
 
 
 def _get_climate_data_single(
@@ -63,8 +138,9 @@ def _get_climate_data_single(
         # When obs=True, only years_obs is required
         if years_obs is None:
             raise ValueError("years_obs must be provided when obs is True")
-        if not (1980 <= min(years_obs) <= max(years_obs) <= 2020):
-            raise ValueError("Years in years_obs must be within the range 1980 to 2020")
+        years_obs_values = [int(year) for year in years_obs]
+        if not years_obs_values:
+            raise ValueError("years_obs cannot be empty when obs is True")
         
         # Set default values for CORDEX parameters (not used but needed for function calls)
         cordex_domain = cordex_domain or "AFR-22"  # dummy value
@@ -291,7 +367,8 @@ def get_climate_data(
     Args:
     country (str): Name of the country for which data is to be processed.
         Use None if specifying a region using xlim and ylim.
-    years_obs (range): Range of years for observational data (ERA5 only). Required when obs is True. (default: None).
+    years_obs (range): Years for observational data (ERA5). Required when obs is True.
+        No fixed year bounds are enforced; available years depend on the source files. (default: None).
     obs (bool): Flag to indicate if processing observational data (default: False).
         When True, only years_obs is required. CORDEX parameters are optional.
     cordex_domain (str): CORDEX domain of the climate data. One of {VALID_DOMAINS}.
@@ -326,6 +403,7 @@ def get_climate_data(
     dict: If a single (gcm, rcm, rcp) is requested, returns {variable: DataArray}.
           If multiple are requested, returns {rcp: {"{gcm}-{rcm}": {variable: DataArray}}}.
     """
+    _show_startup_announcements()
 
     if obs and any(isinstance(v, list) for v in (rcp, gcm, rcm) if v is not None):
         raise ValueError("rcp/gcm/rcm lists are not supported when obs=True")

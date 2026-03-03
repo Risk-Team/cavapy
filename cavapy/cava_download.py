@@ -373,9 +373,13 @@ def _download_data(
                 ds_cropped.attrs["units"] = "m s-1"
 
             # Select years
-            years = [x for x in years_obs]
-            time_mask = (ds_cropped["time"].dt.year >= years[0]) & (
-                ds_cropped["time"].dt.year <= years[-1]
+            years = [int(year) for year in years_obs]
+            if not years:
+                raise ValueError("years_obs cannot be empty")
+            year_min = min(years)
+            year_max = max(years)
+            time_mask = (ds_cropped["time"].dt.year >= year_min) & (
+                ds_cropped["time"].dt.year <= year_max
             )
 
         else:
@@ -474,7 +478,7 @@ def _download_data(
 
     if obs:
         log.info(
-            f"ERA5 data for {variable} has been processed: unit conversion ({ds_cropped.attrs.get('units', 'unknown units')}), time selection ({years[0]}-{years[-1]})"
+            f"ERA5 data for {variable} has been processed: unit conversion ({ds_cropped.attrs.get('units', 'unknown units')}), time selection ({min(years)}-{max(years)})"
         )
     else:
         log.info(
