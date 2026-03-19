@@ -1,0 +1,34 @@
+<svg width="640" height="220" viewBox="0 0 640 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">cavapy logo</title>
+  <desc id="desc">Stylized CAVA climate mark with sun, terrain and data waves.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f4c81"/>
+      <stop offset="100%" stop-color="#118ab2"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#ffd166"/>
+      <stop offset="100%" stop-color="#f4a261"/>
+    </linearGradient>
+    <linearGradient id="terrain" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#2a9d8f"/>
+      <stop offset="100%" stop-color="#52b788"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="20" width="200" height="180" rx="28" fill="url(#bg)"/>
+  <circle cx="70" cy="75" r="26" fill="url(#sun)"/>
+
+  <path d="M30 154 C68 116, 94 128, 132 106 C160 90, 182 95, 202 82 L202 200 L30 200 Z" fill="url(#terrain)" opacity="0.95"/>
+  <path d="M30 162 C62 144, 96 146, 126 132 C156 118, 179 122, 202 110" fill="none" stroke="#d8f3dc" stroke-width="3" opacity="0.75"/>
+
+  <path d="M40 62 C57 50, 79 50, 96 62 C112 74, 134 74, 151 62" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+
+  <g fill="none" stroke="#caf0f8" stroke-width="3" stroke-linecap="round">
+    <path d="M40 176 C66 170, 92 182, 118 176 C144 170, 170 182, 196 176"/>
+    <path d="M40 186 C66 180, 92 192, 118 186 C144 180, 170 192, 196 186" opacity="0.75"/>
+  </g>
+
+  <text x="240" y="98" fill="#0b2239" font-family="Avenir, Montserrat, Segoe UI, sans-serif" font-size="64" font-weight="700" letter-spacing="1.5">cavapy</text>
+  <text x="243" y="136" fill="#355070" font-family="Avenir, Montserrat, Segoe UI, sans-serif" font-size="22" font-weight="500">Climate Data Access for CAVA</text>
+</svg>
