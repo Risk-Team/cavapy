@@ -6,7 +6,6 @@
   <a href="https://pypi.org/project/cavapy/"><img src="https://img.shields.io/pypi/v/cavapy?label=PyPI&style=for-the-badge" alt="PyPI version"></a>
   <a href="https://pepy.tech/project/cavapy"><img src="https://img.shields.io/pepy/dt/cavapy?style=for-the-badge&label=Downloads" alt="Total downloads"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-1f6feb?style=for-the-badge" alt="Python 3.11+">
-  <a href="https://www.fao.org/contact-us/data-protection-and-privacy/en/"><img src="https://img.shields.io/badge/FAO-Data%20Protection%20%26%20Privacy-0a66c2?style=for-the-badge" alt="FAO privacy"></a>
 </p>
 
 <p align="center">
