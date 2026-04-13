@@ -339,22 +339,12 @@ def _download_data(
                 ds_var = _open_dataset_with_retry(ERA5_DATA_LOCAL_PATH)[var]
             log.info("Connection established")
 
-            # Coordinate normalization and renaming for 'hurs'
-            if var == "hurs":
-                ds_var = ds_var.rename({"lat": "latitude", "lon": "longitude"})
-                # Normalize latitude order to match other ERA5 variables (descending)
-                ds_var = ds_var.sortby("latitude", ascending=False)
-                ds_cropped = ds_var.sel(
-                    longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-                    latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-                )
-            else:
-                ds_var.coords["longitude"] = (ds_var.coords["longitude"] + 180) % 360 - 180
-                ds_var = ds_var.sortby(ds_var.longitude)
-                ds_cropped = ds_var.sel(
-                    longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
-                    latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
-                )
+            ds_var.coords["longitude"] = (ds_var.coords["longitude"] + 180) % 360 - 180
+            ds_var = ds_var.sortby(ds_var.longitude)
+            ds_cropped = ds_var.sel(
+                longitude=slice(bbox["xlim"][0], bbox["xlim"][1]),
+                latitude=slice(bbox["ylim"][1], bbox["ylim"][0]),
+            )
 
             # Unit conversion
             if var in ["t2mx", "t2mn", "t2m"]:
